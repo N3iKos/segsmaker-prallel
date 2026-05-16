@@ -2,7 +2,7 @@ TOKET = ''
 TOBRUT = ''
 
 from IPython.core.magic import register_line_magic
-from IPython.display import display, HTML
+from IPython.display import display, HTML, clear_output
 from urllib.parse import urlparse
 from IPython import get_ipython
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -32,6 +32,47 @@ RESET = '\033[0m'
 
 CD = os.chdir
 SyS = get_ipython().system
+
+# ─── Aria2c progress helpers ─────────────────────────────────────────────────
+_TO_BYTES = {'B':1,'KiB':1024,'MiB':1024**2,'GiB':1024**3,
+             'KB':1000,'MB':1000**2,'GB':1000**3}
+
+def _parse_aria2_stats(raw):
+    """Extract numeric stats from a raw aria2c progress line."""
+    s = {'pct':0,'done_b':0.0,'total_b':0.0,'speed_b':0.0,'eta_s':0}
+    m = re.search(r'([\d.]+)(\w+)/([\d.]+)(\w+)\((\d+)%\)', raw)
+    if m:
+        s['done_b']  = float(m.group(1)) * _TO_BYTES.get(m.group(2), 1)
+        s['total_b'] = float(m.group(3)) * _TO_BYTES.get(m.group(4), 1)
+        s['pct']     = int(m.group(5))
+    m = re.search(r'DL:([\d.]+)(\w+)', raw)
+    if m: s['speed_b'] = float(m.group(1)) * _TO_BYTES.get(m.group(2), 1)
+    m = re.search(r'ETA:(\d+)(s|m|h)', raw)
+    if m: s['eta_s'] = int(m.group(1)) * {'s':1,'m':60,'h':3600}[m.group(2)]
+    return s
+
+def _fmt_size(b):
+    for u in ('B','KiB','MiB','GiB'):
+        if b < 1024 or u == 'GiB': return f'{b:.1f}{u}'
+        b /= 1024
+
+def _fmt_eta(s):
+    if s <= 0: return '?'
+    return f'{s}s' if s < 60 else f'{s//60}m{s%60:02d}s'
+
+def _fmt_progress(raw):
+    """Apply ANSI formatting to a raw aria2c progress line."""
+    p = raw
+    p = re.sub(r'\[', MAGENTA + '【' + RESET, p)
+    p = re.sub(r'\]', MAGENTA + '】' + RESET, p)
+    p = re.sub(r'(#)(\w+)', f'{CYAN}\\1{RESET}{GREEN}\\2{RESET}', p)
+    p = re.sub(r'(\d+(\.\d+)?)(\w+)(/)(\d+(\.\d+)?)(\w+)',
+               f'\\1{PURPLE}\\3{RESET}{MAGENTA}\\4{RESET}\\5{PURPLE}\\7{RESET}', p)
+    p = re.sub(r'(\()(\d+%)(\))', f'{MAGENTA}\\1{RESET}\\2{MAGENTA}\\3{RESET}', p)
+    p = re.sub(r'(CN)(:)(\d+)', f'{CYAN}\\1{RESET}\\2{ORANGE}\\3{RESET}', p)
+    p = re.sub(r'(DL)(:)([\d.]+)(\w+)', f'{CYAN}\\1{RESET}\\2\\3{PURPLE}\\4{RESET}', p)
+    p = re.sub(r'(ETA)(:)(\d+\w+)', f'{CYAN}\\1{RESET}\\2{YELLOW}\\3{RESET}', p)
+    return p
 iRON = os.environ
 
 KAGGLE = 'KAGGLE_DATA_PROXY_TOKEN' in iRON
@@ -366,7 +407,7 @@ def get_url(url, fn):
 
     return maybe_add_token(url), None, None
 
-def ariari(url, fp, fn):
+def ariari(url, fp, fn, on_progress=None):
     url, j, versionId = get_url(url, fn)
     if not url: return
 
@@ -399,6 +440,7 @@ def ariari(url, fp, fn):
         f"--header=User-Agent: {civitai_headers()['User-Agent'] if f'{civitai}' in url else 'Mozilla/5.0'}",
         '--allow-overwrite=true', '--console-log-level=error', '--stderr=true',
         '--auto-file-renaming=false', '--min-split-size=1M',
+        f'--dir={str(fp)}',
         '-c', '-x16', '-s16', '-k1M', '-j5'
     ]
 
@@ -431,20 +473,13 @@ def ariari(url, fp, fn):
                         error_line.append(prog)
 
                     if re.match(r'\[#\w{6}\s.*\]', prog):
-                        prog = re.sub(r'\[', MAGENTA + '【' + RESET, prog)
-                        prog = re.sub(r'\]', MAGENTA + '】' + RESET, prog)
-                        prog = re.sub(r'(#)(\w+)', f'{CYAN}\\1{RESET}{GREEN}\\2{RESET}', prog)
-                        prog = re.sub(r'(\d+(\.\d+)?)(\w+)(/)(\d+(\.\d+)?)(\w+)', f"\\1{PURPLE}\\3{RESET}{MAGENTA}\\4{RESET}\\5{PURPLE}\\7{RESET}", prog)
-                        prog = re.sub(r'(\()(\d+%)(\))', f'{MAGENTA}\\1{RESET}\\2{MAGENTA}\\3{RESET}', prog)
-                        prog = re.sub(r'(CN)(:)(\d+)', f"{CYAN}\\1{RESET}\\2{ORANGE}\\3{RESET}", prog)
-                        prog = re.sub(r'(DL)(:)(\d+(\.\d+)?)(\w+)', f"{CYAN}\\1{RESET}\\2\\3{PURPLE}\\5{RESET}", prog)
-                        prog = re.sub(r'(ETA)(:)(\d+\w+)', f"{CYAN}\\1{RESET}\\2{YELLOW}\\3{RESET}", prog)
-
-                        lines = prog.splitlines()
-                        for line in lines:
-                            print(f"\r{' '*300}\r {line}", end='')
+                        raw_prog = prog  # keep raw for stats / callback
+                        if on_progress:
+                            on_progress(raw_prog)
+                        else:
+                            formatted = _fmt_progress(raw_prog)
+                            print(f"\r{' '*300}\r {formatted}", end='')
                             sys.stdout.flush()
-
                         break_line = True
                         break
 
@@ -452,7 +487,7 @@ def ariari(url, fp, fn):
         error = error_code + error_line
         for lines in error: print(f'  {lines}')
 
-        break_line and print()
+        if break_line and not on_progress: print()
 
         stripe = aria2_output.find('======+====+===========')
         if stripe != -1:
@@ -625,91 +660,135 @@ def pull(line):
 
 _print_lock = threading.Lock()
 
-def _locked_print(*args, **kwargs):
-    """Thread-safe print to avoid interleaved output during parallel downloads."""
-    with _print_lock:
-        print(*args, **kwargs)
-
 def parallel_batch_download(items, max_workers=3):
     """
-    Download multiple files in parallel using a thread pool.
-
-    Parameters
-    ----------
-    items : list of tuples
-        Each tuple must be (url, dest_path, filename_or_None).
-        - url          : str  — the download URL (civitai/hf/direct)
-        - dest_path    : str or Path  — destination directory
-        - filename     : str or None  — override filename; None to auto-detect
-
-    max_workers : int
-        How many files to download simultaneously.
-        Keep at 3 for Colab/SageMaker to avoid hitting disk-IO ceilings.
-        Increase to 5 if you're on a paid tier with fast NVMe.
-
-    Returns
-    -------
-    dict  — {url: 'ok' | 'skip' | 'error'} for every item
-
-    Usage
-    -----
-    From notebook cell::
-
-        from nenen88 import parallel_batch_download
-        parallel_batch_download([
-            ('https://civitai.com/api/download/models/357609', CKPT, 'Juggernaut-XL.safetensors'),
-            ('https://civitai.com/models/122359',              LORA, None),
-            ('https://huggingface.co/...',                     VAE,  'sdxl_vae.safetensors'),
-        ])
+    Download multiple files in parallel with per-slot progress lines + aggregate summary.
+    Each download occupies its own line; a final '【#Parallel ...】' line shows combined stats.
     """
     if not items:
         return {}
 
+    total  = len(items)
     results = {}
-    total   = len(items)
 
-    _locked_print(f'\n{CYAN}▶ Parallel Download — {total} file(s), {max_workers} worker(s){RESET}\n')
+    # ── Shared progress state (written by workers, read by renderer) ──────────
+    _state_lock = threading.Lock()
+    _state = {}   # idx -> {'label': str, 'raw': str, 'done': bool, 'ok': bool}
 
+    def _set_state(idx, **kw):
+        with _state_lock:
+            if idx not in _state:
+                _state[idx] = {'label': '', 'raw': '', 'done': False, 'ok': True}
+            _state[idx].update(kw)
+
+    # ── Renderer ──────────────────────────────────────────────────────────────
+    _stop_render = threading.Event()
+
+    def _build_frame():
+        with _state_lock:
+            snap = {k: dict(v) for k, v in _state.items()}
+
+        lines_out = []
+        agg_speed = 0.0; agg_done = 0.0; agg_total = 0.0; agg_eta = 0; active = 0
+
+        for i in range(total):
+            slot  = snap.get(i, {})
+            label = slot.get('label', f'file {i+1}')
+            done  = slot.get('done', False)
+            ok    = slot.get('ok', True)
+            raw   = slot.get('raw', '')
+
+            if done:
+                icon = f'{GREEN}✓{RESET}' if ok else f'{RED}✗{RESET}'
+                lines_out.append(f'  [{i+1}/{total}] {icon} {label}')
+            elif raw:
+                lines_out.append(f' {_fmt_progress(raw)}')
+                st = _parse_aria2_stats(raw)
+                agg_speed += st['speed_b']; agg_done += st['done_b']
+                agg_total += st['total_b']; agg_eta = max(agg_eta, st['eta_s'])
+                active += 1
+            else:
+                lines_out.append(f'  [{i+1}/{total}] {YELLOW}⏳{RESET} {label} — starting...')
+
+        # Aggregate summary line
+        if active > 0:
+            pct  = int(100 * agg_done / agg_total) if agg_total else 0
+            spd  = _fmt_size(agg_speed) + '/s'
+            done_s  = _fmt_size(agg_done)
+            total_s = _fmt_size(agg_total)
+            eta  = _fmt_eta(agg_eta)
+            agg_line = (
+                f' {MAGENTA}【{RESET}'
+                f'{CYAN}#Parallel{RESET} '
+                f'{done_s}{MAGENTA}/{RESET}{total_s}'
+                f'{MAGENTA}({RESET}{pct}%{MAGENTA}){RESET} '
+                f'{CYAN}DL{RESET}:{PURPLE}{spd}{RESET} '
+                f'{CYAN}ETA{RESET}:{YELLOW}{eta}{RESET}'
+                f'{MAGENTA}】{RESET}'
+            )
+        else:
+            done_c = sum(1 for s in snap.values() if s.get('done'))
+            agg_line = f'  {CYAN}▶ {done_c}/{total} completed{RESET}'
+
+        lines_out.append(agg_line)
+        return '\n'.join(lines_out)
+
+    def _render_loop():
+        while not _stop_render.is_set():
+            frame = _build_frame()
+            clear_output(wait=True)
+            print(frame)
+            sys.stdout.flush()
+            _stop_render.wait(0.25)
+        # final frame
+        clear_output(wait=True)
+        print(_build_frame())
+        sys.stdout.flush()
+
+    renderer = threading.Thread(target=_render_loop, daemon=True, name='progress-renderer')
+    renderer.start()
+
+    # ── Workers ───────────────────────────────────────────────────────────────
     def _worker(idx, url, fp, fn):
         label = fn if fn else Path(urlparse(url).path).name or url
-        prefix = f'  [{idx+1}/{total}] {GREEN}{label}{RESET}'
-        _locked_print(f'{prefix} {YELLOW}starting…{RESET}')
+        _set_state(idx, label=label)
         try:
             fp = Path(fp).expanduser()
             fp.mkdir(parents=True, exist_ok=True)
 
+            def _on_progress(raw):
+                _set_state(idx, raw=raw)
+
             CHG = any(domain in url for domain in [*CIVITAI, 'huggingface.co', 'github.com'])
             if CHG:
-                ariari(url, fp, fn)
+                ariari(url, fp, fn, on_progress=_on_progress)
             elif 'drive.google.com' in url:
                 gdrown(url, fp, fn)
             else:
-                path_arg = str(fp)
-                cmd = (f"curl -#OJL '{url}'" if not fn
-                       else f"curl -#L '{url}' -o '{fn}'")
-                old_cwd = Path.cwd()
-                CD(fp)
+                cmd = (f"curl -#OJL '{url}'" if not fn else f"curl -#L '{url}' -o '{fn}'")
+                old_cwd = Path.cwd(); CD(fp)
                 curlly(cmd, fn or label)
                 CD(old_cwd)
 
-            _locked_print(f'{prefix} {GREEN}✓ done{RESET}')
+            _set_state(idx, done=True, ok=True, raw='')
             return url, 'ok'
         except Exception as e:
-            _locked_print(f'{prefix} {RED}✗ error: {e}{RESET}')
+            _set_state(idx, done=True, ok=False, raw='')
             return url, 'error'
 
     with ThreadPoolExecutor(max_workers=max_workers) as pool:
-        futures = [
-            pool.submit(_worker, idx, url, fp, fn)
-            for idx, (url, fp, fn) in enumerate(items)
-        ]
-        for future in as_completed(futures):
-            url, status = future.result()
+        futures = [pool.submit(_worker, idx, url, fp, fn)
+                   for idx, (url, fp, fn) in enumerate(items)]
+        for f in as_completed(futures):
+            url, status = f.result()
             results[url] = status
 
-    ok    = sum(1 for s in results.values() if s == 'ok')
-    err   = sum(1 for s in results.values() if s == 'error')
-    _locked_print(f'\n{CYAN}▶ Batch complete — {GREEN}{ok} ok{RESET}, {RED}{err} error(s){RESET}\n')
+    _stop_render.set()
+    renderer.join(timeout=2)
+
+    ok  = sum(1 for s in results.values() if s == 'ok')
+    err = sum(1 for s in results.values() if s == 'error')
+    print(f'\n{CYAN}▶ Batch complete — {GREEN}{ok} ok{RESET}, {RED}{err} error(s){RESET}\n')
     return results
 
 
