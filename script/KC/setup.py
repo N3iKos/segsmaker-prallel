@@ -1,8 +1,10 @@
 from IPython.display import display, Image, clear_output
 from IPython import get_ipython
 from ipywidgets import widgets
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 import subprocess
+import threading
 import argparse
 import shlex
 import json
@@ -177,6 +179,77 @@ def install_tunnel():
         SyS(f'tar -xzf {name} -C {USR}')
         SyS(f'rm -f {name}')
 
+def parallel_clone(urls, dest_dir):
+    """
+    Clone multiple git repos into dest_dir simultaneously.
+    Falls back to sequential if cloning fails for any entry.
+
+    Parameters
+    ----------
+    urls : list of str
+        Full git clone URLs (or 'git clone ...' prefixed strings).
+    dest_dir : Path
+        Directory in which to run the clones.
+    """
+    if not urls:
+        return
+
+    _lock = threading.Lock()
+
+    def _do_clone(url):
+        url = url.strip()
+        if not url or url.startswith('#'):
+            return
+        if url.startswith('git clone '):
+            url = url[len('git clone '):].strip()
+        repo_name = url.split('/')[-1].replace('.git', '')
+        cmd = ['git', 'clone', '--depth=1', '--quiet', url]
+        try:
+            result = subprocess.run(
+                cmd, cwd=str(dest_dir),
+                capture_output=True, text=True
+            )
+            with _lock:
+                if result.returncode == 0:
+                    print(f'  {GREEN}✓{RESET} {repo_name}')
+                else:
+                    # retry without depth in case the repo needs full history
+                    cmd_full = ['git', 'clone', '--quiet', url]
+                    subprocess.run(cmd_full, cwd=str(dest_dir), capture_output=True)
+                    print(f'  {YELLOW}↺{RESET} {repo_name} (retried without --depth)')
+        except Exception as e:
+            with _lock:
+                print(f'  {RED}✗{RESET} {repo_name}: {e}')
+
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        pool.map(_do_clone, urls)
+
+
+def parallel_download_list(items, max_workers=4):
+    """
+    Fan out a list of download() calls concurrently.
+
+    Parameters
+    ----------
+    items : list of str
+        Each item is a raw string you'd normally pass to download().
+        Example: 'https://hf.co/.../model.safetensors /path/to/dir'
+    max_workers : int
+        Number of concurrent downloads. Default 4.
+    """
+    if not items:
+        return
+
+    def _do(item):
+        try:
+            netorare(item)
+        except Exception as e:
+            print(f'  {RED}download error: {e}{RESET}')
+
+    with ThreadPoolExecutor(max_workers=max_workers) as pool:
+        pool.map(_do, items)
+
+
 def sym_link(U, M):
     configs = {
         'A1111': {
@@ -325,6 +398,8 @@ def webui_req(U, W, M):
 
     u = M / 'upscale_models' if U in ['ComfyUI', 'SwarmUI'] else M / 'ESRGAN'
 
+    # Upscalers are downloaded in parallel in a background thread so the main
+    # thread can immediately proceed to cloning extensions.
     upscalers = [
         f'https://huggingface.co/gutris1/webui/resolve/main/misc/4x-UltraSharp.pth {u}',
         f'https://huggingface.co/gutris1/webui/resolve/main/misc/4x-AnimeSharp.pth {u}',
@@ -337,8 +412,18 @@ def webui_req(U, W, M):
         f'https://huggingface.co/subby2006/NMKD-UltraYandere/resolve/main/4x_NMKD-UltraYandere_300k.pth {u}'
     ]
 
-    line = scripts + upscalers
+    # Always download scripts sequentially (they're tiny and needed immediately)
+    line = scripts
     for item in line: download(item)
+
+    # Fire upscaler downloads in background — they're large but not needed until runtime
+    def _bg_upscalers():
+        parallel_download_list(upscalers, max_workers=4)
+
+    bg = threading.Thread(target=_bg_upscalers, daemon=True, name='upscaler-bg')
+    bg.start()
+    # Store reference so webui_installation can join() before finishing
+    webui_req._upscaler_thread = bg
 
     if U not in ['SwarmUI', 'ComfyUI']:
         e = 'jpg' if U in ['Forge-Classic', 'Forge-Neo'] else 'png'
@@ -358,7 +443,17 @@ def webui_extension(U, W, M):
 
     if U == 'ComfyUI':
         say('<br><b>【{red} Installing Custom Nodes{d} 】{red}</b>')
-        clone(str(W / 'asd/custom_nodes.txt'))
+
+        # Read node list and clone them all in parallel
+        node_list_path = W / 'asd/custom_nodes.txt'
+        if node_list_path.exists():
+            node_urls = [
+                line.strip() for line in node_list_path.read_text().splitlines()
+                if line.strip() and not line.strip().startswith('#')
+            ]
+            parallel_clone(node_urls, EXT)
+        else:
+            clone(str(node_list_path))
         print()
 
         for faces in [
@@ -368,7 +463,18 @@ def webui_extension(U, W, M):
 
     else:
         say('<br><b>【{red} Installing Extensions{d} 】{red}</b>')
-        clone(str(W / 'asd/extension.txt'))
+
+        # Read extension list and clone them all in parallel
+        ext_list_path = W / 'asd/extension.txt'
+        if ext_list_path.exists():
+            ext_urls = [
+                line.strip() for line in ext_list_path.read_text().splitlines()
+                if line.strip() and not line.strip().startswith('#')
+            ]
+            parallel_clone(ext_urls, EXT)
+        else:
+            clone(str(ext_list_path))
+
         if ENVNAME == 'Kaggle': clone('https://github.com/gutris1/sd-image-encryption')
 
 def webui_installation(U, W):
@@ -387,6 +493,13 @@ def webui_installation(U, W):
     SyS(f"unzip -qo {W / 'embeddingsXL.zip'} -d {E} && rm {W / 'embeddingsXL.zip'}")
 
     if U != 'SwarmUI': webui_extension(U, W, M)
+
+    # Wait for background upscaler downloads to finish before exiting setup
+    bg = getattr(webui_req, '_upscaler_thread', None)
+    if bg and bg.is_alive():
+        print(f'\n  {YELLOW}Waiting for upscaler downloads to finish…{RESET}')
+        bg.join()
+        print(f'  {GREEN}✓ Upscalers ready.{RESET}\n')
 
 def webui_selection(ui):
     with output:
@@ -475,6 +588,8 @@ if not ENVNAME:
 
 RESET = '\033[0m'
 RED = '\033[31m'
+GREEN = '\033[38;5;35m'
+YELLOW = '\033[33m'
 PURPLE = '\033[38;5;135m'
 ORANGE = '\033[38;5;208m'
 ARROW = f'{ORANGE}▶{RESET}'

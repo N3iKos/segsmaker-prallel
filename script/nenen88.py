@@ -5,13 +5,16 @@ from IPython.core.magic import register_line_magic
 from IPython.display import display, HTML
 from urllib.parse import urlparse
 from IPython import get_ipython
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from tqdm import tqdm
 import subprocess
+import threading
 import requests
 import zipfile
 import shlex
 import json
+import time
 import sys
 import re
 import os
@@ -385,10 +388,17 @@ def ariari(url, fp, fn):
             print(f"  Preflight failed: {e}")
             print("  Falling back to aria2 with Authorization header.")
 
+    # Optimized aria2c flags for cloud network:
+    # -x16 -s16: 16 connections per file, 16 splits — maximizes bandwidth on cloud links
+    # -k1M: 1MB chunk size — optimal for large model files
+    # -j5: up to 5 parallel jobs per aria2c instance
+    # --min-split-size=1M: ensures splits are meaningful
+    # --auto-file-renaming=false: prevents duplicate-name collisions when running parallel
     cmd = [
         'aria2c',
         f"--header=User-Agent: {civitai_headers()['User-Agent'] if f'{civitai}' in url else 'Mozilla/5.0'}",
         '--allow-overwrite=true', '--console-log-level=error', '--stderr=true',
+        '--auto-file-renaming=false', '--min-split-size=1M',
         '-c', '-x16', '-s16', '-k1M', '-j5'
     ]
 
@@ -612,6 +622,96 @@ def pull(line):
 
     cmd5 = f'rm -rf {str(repofold)}'
     subs(shlex.split(cmd5), cwd=str(fp), **opts)
+
+_print_lock = threading.Lock()
+
+def _locked_print(*args, **kwargs):
+    """Thread-safe print to avoid interleaved output during parallel downloads."""
+    with _print_lock:
+        print(*args, **kwargs)
+
+def parallel_batch_download(items, max_workers=3):
+    """
+    Download multiple files in parallel using a thread pool.
+
+    Parameters
+    ----------
+    items : list of tuples
+        Each tuple must be (url, dest_path, filename_or_None).
+        - url          : str  — the download URL (civitai/hf/direct)
+        - dest_path    : str or Path  — destination directory
+        - filename     : str or None  — override filename; None to auto-detect
+
+    max_workers : int
+        How many files to download simultaneously.
+        Keep at 3 for Colab/SageMaker to avoid hitting disk-IO ceilings.
+        Increase to 5 if you're on a paid tier with fast NVMe.
+
+    Returns
+    -------
+    dict  — {url: 'ok' | 'skip' | 'error'} for every item
+
+    Usage
+    -----
+    From notebook cell::
+
+        from nenen88 import parallel_batch_download
+        parallel_batch_download([
+            ('https://civitai.com/api/download/models/357609', CKPT, 'Juggernaut-XL.safetensors'),
+            ('https://civitai.com/models/122359',              LORA, None),
+            ('https://huggingface.co/...',                     VAE,  'sdxl_vae.safetensors'),
+        ])
+    """
+    if not items:
+        return {}
+
+    results = {}
+    total   = len(items)
+
+    _locked_print(f'\n{CYAN}▶ Parallel Download — {total} file(s), {max_workers} worker(s){RESET}\n')
+
+    def _worker(idx, url, fp, fn):
+        label = fn if fn else Path(urlparse(url).path).name or url
+        prefix = f'  [{idx+1}/{total}] {GREEN}{label}{RESET}'
+        _locked_print(f'{prefix} {YELLOW}starting…{RESET}')
+        try:
+            fp = Path(fp).expanduser()
+            fp.mkdir(parents=True, exist_ok=True)
+
+            CHG = any(domain in url for domain in [*CIVITAI, 'huggingface.co', 'github.com'])
+            if CHG:
+                ariari(url, fp, fn)
+            elif 'drive.google.com' in url:
+                gdrown(url, fp, fn)
+            else:
+                path_arg = str(fp)
+                cmd = (f"curl -#OJL '{url}'" if not fn
+                       else f"curl -#L '{url}' -o '{fn}'")
+                old_cwd = Path.cwd()
+                CD(fp)
+                curlly(cmd, fn or label)
+                CD(old_cwd)
+
+            _locked_print(f'{prefix} {GREEN}✓ done{RESET}')
+            return url, 'ok'
+        except Exception as e:
+            _locked_print(f'{prefix} {RED}✗ error: {e}{RESET}')
+            return url, 'error'
+
+    with ThreadPoolExecutor(max_workers=max_workers) as pool:
+        futures = [
+            pool.submit(_worker, idx, url, fp, fn)
+            for idx, (url, fp, fn) in enumerate(items)
+        ]
+        for future in as_completed(futures):
+            url, status = future.result()
+            results[url] = status
+
+    ok    = sum(1 for s in results.values() if s == 'ok')
+    err   = sum(1 for s in results.values() if s == 'error')
+    _locked_print(f'\n{CYAN}▶ Batch complete — {GREEN}{ok} ok{RESET}, {RED}{err} error(s){RESET}\n')
+    return results
+
 
 @register_line_magic
 def tempe(line=''):
