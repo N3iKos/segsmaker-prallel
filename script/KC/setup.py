@@ -196,14 +196,25 @@ def parallel_clone(urls, dest_dir):
 
     _lock = threading.Lock()
 
-    def _do_clone(url):
-        url = url.strip()
-        if not url or url.startswith('#'):
+    def _do_clone(entry):
+        entry = entry.strip()
+        if not entry or entry.startswith('#'):
             return
-        if url.startswith('git clone '):
-            url = url[len('git clone '):].strip()
-        repo_name = url.split('/')[-1].replace('.git', '')
-        cmd = ['git', 'clone', '--depth=1', '--quiet', url]
+        if entry.startswith('git clone '):
+            entry = entry[len('git clone '):].strip()
+
+        # Format: "URL" or "URL folder-name"
+        parts = entry.split()
+        repo_url = parts[0]
+        folder_name = parts[1] if len(parts) > 1 else None
+
+        # Derive display name from folder arg or URL basename
+        display_name = folder_name if folder_name else repo_url.split('/')[-1].replace('.git', '')
+
+        cmd = ['git', 'clone', '--depth=1', '--quiet', repo_url]
+        if folder_name:
+            cmd.append(folder_name)
+
         try:
             result = subprocess.run(
                 cmd, cwd=str(dest_dir),
@@ -211,15 +222,20 @@ def parallel_clone(urls, dest_dir):
             )
             with _lock:
                 if result.returncode == 0:
-                    print(f'  {GREEN}✓{RESET} {repo_name}')
+                    print(f'  {GREEN}✓{RESET} {display_name}')
                 else:
-                    # retry without depth in case the repo needs full history
-                    cmd_full = ['git', 'clone', '--quiet', url]
-                    subprocess.run(cmd_full, cwd=str(dest_dir), capture_output=True)
-                    print(f'  {YELLOW}↺{RESET} {repo_name} (retried without --depth)')
+                    # Retry without --depth (some repos disallow shallow clone)
+                    cmd_full = ['git', 'clone', '--quiet', repo_url]
+                    if folder_name:
+                        cmd_full.append(folder_name)
+                    r2 = subprocess.run(cmd_full, cwd=str(dest_dir), capture_output=True, text=True)
+                    if r2.returncode == 0:
+                        print(f'  {GREEN}✓{RESET} {display_name} (full clone)')
+                    else:
+                        print(f'  {RED}✗{RESET} {display_name}: {r2.stderr.strip()[:120]}')
         except Exception as e:
             with _lock:
-                print(f'  {RED}✗{RESET} {repo_name}: {e}')
+                print(f'  {RED}✗{RESET} {display_name}: {e}')
 
     with ThreadPoolExecutor(max_workers=4) as pool:
         pool.map(_do_clone, urls)
