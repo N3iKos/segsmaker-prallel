@@ -77,16 +77,9 @@ def Launch():
             end_time = int(time.time()) + 3600
             SyS(f'echo -n {end_time} > {timer}')
 
-            # Fix: uninstall system transformers yang terlalu baru (4.40+)
-            # Versi baru punya import tensorflow di image_transforms.py yang
-            # menyebabkan ImportError: cannot import name 'runtime_version' from 'google.protobuf'
-            if ui in ['Forge', 'ReForge', 'Forge-Classic']:
+            if ui == 'Forge':
                 FT = cwd / 'FT.txt'
-                if not FT.exists():
-                    pip = '/tmp/python311/bin/python3 -m pip' if ui == 'Forge-Classic' else '/tmp/venv/bin/python3 -m pip'
-                    SyS('pip uninstall -qy transformers')
-                    SyS(f'{pip} install -q "protobuf>=4.21.0"')  # safety net jika protobuf sistem masih versi 3.x
-                    FT.write_text('blyat')
+                FT.exists() or (SyS('pip uninstall -qy transformers'), FT.write_text('blyat'))
 
         cmd = f'python3 {launcher} ' + ' '.join(sys.argv[1:])
 

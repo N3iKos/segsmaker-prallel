@@ -1,10 +1,8 @@
 from IPython.display import display, Image, clear_output
 from IPython import get_ipython
 from ipywidgets import widgets
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 import subprocess
-import threading
 import argparse
 import shlex
 import json
@@ -39,16 +37,23 @@ def getENV():
     return None, None, None
 
 def getArgs():
+    import nenen88
     parser = argparse.ArgumentParser(description='WebUI Installer Script for Kaggle and Google Colab')
     parser.add_argument('--webui', required=True, help='available webui: A1111, Forge, ReForge, ReForge-old, Forge-Classic, Forge-Neo, ComfyUI, SwarmUI')
     parser.add_argument('--civitai_key', required=True, help='your CivitAI API key')
     parser.add_argument('--hf_read_token', default=None, help='your Huggingface READ Token (optional)')
+    parser.add_argument('--parallel', default='Yes', help='enable parallel downloads (Yes/No)')
+    parser.add_argument('--max_simultaneous', type=int, default=4, help='max simultaneous downloads')
 
     args, unknown = parser.parse_known_args()
 
     arg1 = args.webui.lower()
     arg2 = args.civitai_key.strip()
     arg3 = args.hf_read_token.strip() if args.hf_read_token else ''
+    
+    # Configure nenen88 parallel settings
+    nenen88.PARALLEL = (args.parallel == 'Yes' or args.parallel is True)
+    nenen88.MAX_WORKERS = args.max_simultaneous
 
     if not any(arg1 == option.lower() for option in WEBUI_LIST):
         print(f'{ERROR}: invalid webui option: "{args.webui}"')
@@ -100,7 +105,7 @@ def getPython():
 
         'Forge-Neo': {
             'v': '3.13.12',
-            'url': 'https://huggingface.co/gutris1/webui/resolve/main/env/KC-FN-Python3-13-12-Torch2100-cu130.tar.lz4'
+            'url': 'https://huggingface.co/gutris1/webui/resolve/main/env/KC-FN-Python31312-Torch2120-cu130.tar.lz4'
         }
     }
 
@@ -178,93 +183,6 @@ def install_tunnel():
         SyS(f'wget -qO {name} {url}')
         SyS(f'tar -xzf {name} -C {USR}')
         SyS(f'rm -f {name}')
-
-def parallel_clone(urls, dest_dir):
-    """
-    Clone multiple git repos into dest_dir simultaneously.
-    Falls back to sequential if cloning fails for any entry.
-
-    Parameters
-    ----------
-    urls : list of str
-        Full git clone URLs (or 'git clone ...' prefixed strings).
-    dest_dir : Path
-        Directory in which to run the clones.
-    """
-    if not urls:
-        return
-
-    _lock = threading.Lock()
-
-    def _do_clone(entry):
-        entry = entry.strip()
-        if not entry or entry.startswith('#'):
-            return
-        if entry.startswith('git clone '):
-            entry = entry[len('git clone '):].strip()
-
-        # Format: "URL" or "URL folder-name"
-        parts = entry.split()
-        repo_url = parts[0]
-        folder_name = parts[1] if len(parts) > 1 else None
-
-        # Derive display name from folder arg or URL basename
-        display_name = folder_name if folder_name else repo_url.split('/')[-1].replace('.git', '')
-
-        cmd = ['git', 'clone', '--depth=1', '--quiet', repo_url]
-        if folder_name:
-            cmd.append(folder_name)
-
-        try:
-            result = subprocess.run(
-                cmd, cwd=str(dest_dir),
-                capture_output=True, text=True
-            )
-            with _lock:
-                if result.returncode == 0:
-                    print(f'  {GREEN}✓{RESET} {display_name}')
-                else:
-                    # Retry without --depth (some repos disallow shallow clone)
-                    cmd_full = ['git', 'clone', '--quiet', repo_url]
-                    if folder_name:
-                        cmd_full.append(folder_name)
-                    r2 = subprocess.run(cmd_full, cwd=str(dest_dir), capture_output=True, text=True)
-                    if r2.returncode == 0:
-                        print(f'  {GREEN}✓{RESET} {display_name} (full clone)')
-                    else:
-                        print(f'  {RED}✗{RESET} {display_name}: {r2.stderr.strip()[:120]}')
-        except Exception as e:
-            with _lock:
-                print(f'  {RED}✗{RESET} {display_name}: {e}')
-
-    with ThreadPoolExecutor(max_workers=4) as pool:
-        pool.map(_do_clone, urls)
-
-
-def parallel_download_list(items, max_workers=4):
-    """
-    Fan out a list of download() calls concurrently.
-
-    Parameters
-    ----------
-    items : list of str
-        Each item is a raw string you'd normally pass to download().
-        Example: 'https://hf.co/.../model.safetensors /path/to/dir'
-    max_workers : int
-        Number of concurrent downloads. Default 4.
-    """
-    if not items:
-        return
-
-    def _do(item):
-        try:
-            get_ipython().run_line_magic('download', item)
-        except Exception as e:
-            print(f'  {RED}download error: {e}{RESET}')
-
-    with ThreadPoolExecutor(max_workers=max_workers) as pool:
-        pool.map(_do, items)
-
 
 def sym_link(U, M):
     configs = {
@@ -390,6 +308,7 @@ def sym_link(U, M):
     [SyS(f'ln -s {src} {tg}') for src, tg in cfg['links']]
 
 def webui_req(U, W, M):
+    import nenen88
     CD(W)
 
     if U != 'SwarmUI':
@@ -409,13 +328,13 @@ def webui_req(U, W, M):
 
     scripts = [
         f'https://github.com/N3iKos/segsmaker-prallel/raw/main/script/controlnet.py {W}/asd',
+        f'https://github.com/N3iKos/segsmaker-prallel/raw/main/script/cn15.py {W}/asd',
+        f'https://github.com/N3iKos/segsmaker-prallel/raw/main/script/cnxl.py {W}/asd',
         f'https://github.com/N3iKos/segsmaker-prallel/raw/main/script/KC/segsmaker.py {W}'
     ]
 
     u = M / 'upscale_models' if U in ['ComfyUI', 'SwarmUI'] else M / 'ESRGAN'
 
-    # Upscalers are downloaded in parallel in a background thread so the main
-    # thread can immediately proceed to cloning extensions.
     upscalers = [
         f'https://huggingface.co/gutris1/webui/resolve/main/misc/4x-UltraSharp.pth {u}',
         f'https://huggingface.co/gutris1/webui/resolve/main/misc/4x-AnimeSharp.pth {u}',
@@ -428,18 +347,11 @@ def webui_req(U, W, M):
         f'https://huggingface.co/subby2006/NMKD-UltraYandere/resolve/main/4x_NMKD-UltraYandere_300k.pth {u}'
     ]
 
-    # Always download scripts sequentially (they're tiny and needed immediately)
-    line = scripts
-    for item in line: download(item)
-
-    # Fire upscaler downloads in background — they're large but not needed until runtime
-    def _bg_upscalers():
-        parallel_download_list(upscalers, max_workers=4)
-
-    bg = threading.Thread(target=_bg_upscalers, daemon=True, name='upscaler-bg')
-    bg.start()
-    # Store reference so webui_installation can join() before finishing
-    webui_req._upscaler_thread = bg
+    line = scripts + upscalers
+    if nenen88.PARALLEL and len(line) > 1:
+        download_parallel(line)
+    else:
+        for item in line: download(item)
 
     if U not in ['SwarmUI', 'ComfyUI']:
         e = 'jpg' if U in ['Forge-Classic', 'Forge-Neo'] else 'png'
@@ -454,46 +366,31 @@ def webui_req(U, W, M):
         if U not in ['Forge', 'Forge-Neo']: download(f'https://github.com/N3iKos/segsmaker-prallel/raw/main/config/config.json {W} config.json')
 
 def webui_extension(U, W, M):
+    import nenen88
     EXT = W / 'custom_nodes' if U == 'ComfyUI' else W / 'extensions'
     CD(EXT)
 
     if U == 'ComfyUI':
         say('<br><b>【{red} Installing Custom Nodes{d} 】{red}</b>')
-
-        # Read node list and clone them all in parallel
-        node_list_path = W / 'asd/custom_nodes.txt'
-        if node_list_path.exists():
-            node_urls = [
-                line.strip() for line in node_list_path.read_text().splitlines()
-                if line.strip() and not line.strip().startswith('#')
-            ]
-            parallel_clone(node_urls, EXT)
-        else:
-            clone(str(node_list_path))
+        clone(str(W / 'asd/custom_nodes.txt'))
         print()
 
-        for faces in [
+        faces = [
             f'https://github.com/sczhou/CodeFormer/releases/download/v0.1.0/codeformer.pth {M}/facerestore_models',
             f'https://github.com/TencentARC/GFPGAN/releases/download/v1.3.4/GFPGANv1.4.pth {M}/facerestore_models'
-        ]: download(faces)
+        ]
+        if nenen88.PARALLEL:
+            download_parallel(faces)
+        else:
+            for f in faces: download(f)
 
     else:
         say('<br><b>【{red} Installing Extensions{d} 】{red}</b>')
-
-        # Read extension list and clone them all in parallel
-        ext_list_path = W / 'asd/extension.txt'
-        if ext_list_path.exists():
-            ext_urls = [
-                line.strip() for line in ext_list_path.read_text().splitlines()
-                if line.strip() and not line.strip().startswith('#')
-            ]
-            parallel_clone(ext_urls, EXT)
-        else:
-            clone(str(ext_list_path))
-
+        clone(str(W / 'asd/extension.txt'))
         if ENVNAME == 'Kaggle': clone('https://github.com/gutris1/sd-image-encryption')
 
 def webui_installation(U, W):
+    import nenen88
     M = W / 'Models' if U == 'SwarmUI' else W / 'models'
     E = M / 'Embeddings' if U == 'SwarmUI' else (M / 'embeddings' if U in ['Forge-Classic', 'Forge-Neo', 'ComfyUI'] else W / 'embeddings')
     V = M / 'vae' if U == 'ComfyUI' else M / 'VAE'
@@ -505,17 +402,13 @@ def webui_installation(U, W):
         f'https://huggingface.co/madebyollin/sdxl-vae-fp16-fix/resolve/main/sdxl.vae.safetensors {V} sdxl_vae.safetensors'
     ]
 
-    for i in extras: download(i)
+    if nenen88.PARALLEL:
+        download_parallel(extras)
+    else:
+        for i in extras: download(i)
     SyS(f"unzip -qo {W / 'embeddingsXL.zip'} -d {E} && rm {W / 'embeddingsXL.zip'}")
 
     if U != 'SwarmUI': webui_extension(U, W, M)
-
-    # Wait for background upscaler downloads to finish before exiting setup
-    bg = getattr(webui_req, '_upscaler_thread', None)
-    if bg and bg.is_alive():
-        print(f'\n  {YELLOW}Waiting for upscaler downloads to finish…{RESET}')
-        bg.join()
-        print(f'  {GREEN}✓ Upscalers ready.{RESET}\n')
 
 def webui_selection(ui):
     with output:
@@ -604,8 +497,6 @@ if not ENVNAME:
 
 RESET = '\033[0m'
 RED = '\033[31m'
-GREEN = '\033[38;5;35m'
-YELLOW = '\033[33m'
 PURPLE = '\033[38;5;135m'
 ORANGE = '\033[38;5;208m'
 ARROW = f'{ORANGE}▶{RESET}'
@@ -641,5 +532,5 @@ with loading: display(Image(url=IMG))
 with output: PY.exists() or getPython()
 notebook_scripts()
 
-from nenen88 import clone, say, download, tempe, pull
+from nenen88 import clone, say, download, tempe, pull, download_parallel
 webui_installer()

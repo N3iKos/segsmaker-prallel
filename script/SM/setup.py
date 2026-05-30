@@ -51,7 +51,11 @@ def SM_Script(WEBUI):
     ]
 
 def CN_Script(WEBUI):
-    return f'https://github.com/N3iKos/segsmaker-prallel/raw/main/script/controlnet.py {WEBUI}/asd'
+    return [
+        f'https://github.com/N3iKos/segsmaker-prallel/raw/main/script/controlnet.py {WEBUI}/asd',
+        f'https://github.com/N3iKos/segsmaker-prallel/raw/main/script/cn15.py {WEBUI}/asd',
+        f'https://github.com/N3iKos/segsmaker-prallel/raw/main/script/cnxl.py {WEBUI}/asd',
+    ]
 
 def Load_CSS():
     display(HTML(f'<style>{CSS.read_text()}</style>'))
@@ -247,7 +251,7 @@ def webui_req(U, W, M):
     sym_link(U, M)
 
     scripts = SM_Script(W)
-    scripts.append(CN_Script(W))
+    scripts.extend(CN_Script(W))
 
     u = M / 'upscale_models' if U in ['ComfyUI', 'SwarmUI'] else M / 'ESRGAN'
     upscalers = [
