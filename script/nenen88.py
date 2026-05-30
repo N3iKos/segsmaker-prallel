@@ -791,7 +791,6 @@ def parallel_batch_download(items, max_workers=3):
     print(f'\n{CYAN}▶ Batch complete — {GREEN}{ok} ok{RESET}, {RED}{err} error(s){RESET}\n')
     return results
 
-
 @register_line_magic
 def tempe(line=''):
     try:

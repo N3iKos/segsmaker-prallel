@@ -2,11 +2,7 @@ R = '\033[31m'
 P = '\033[38;5;135m'
 RST = '\033[0m'
 ERR = f'{P}[{RST}{R}ERROR{RST}{P}]{RST}'
-
-GREEN = '\033[32m'
-YELLOW = '\033[33m'
-RED = '\033[31m'
-RESET = '\033[0m'
+GREEN = '\033[38;5;35m'
 
 import sys, subprocess
 python_version = subprocess.run(['python', '--version'], capture_output=True, text=True).stdout.split()[1]
@@ -133,6 +129,9 @@ def install_tunnel():
         binPath.chmod(0o755)
 
 def parallel_clone(urls, dest_dir):
+    """
+    Clone multiple git repos into dest_dir simultaneously.
+    """
     if not urls:
         return
 
@@ -156,31 +155,31 @@ def parallel_clone(urls, dest_dir):
             cmd.append(folder_name)
 
         try:
-            result = subprocess.run(
-                cmd, cwd=str(dest_dir),
-                capture_output=True, text=True
-            )
+            result = subprocess.run(cmd, cwd=str(dest_dir), capture_output=True, text=True)
             with _lock:
                 if result.returncode == 0:
-                    print(f'  {GREEN}✓{RESET} {display_name}')
+                    print(f'  {GREEN}✓{RST} {display_name}')
                 else:
                     cmd_full = ['git', 'clone', '--quiet', repo_url]
                     if folder_name:
                         cmd_full.append(folder_name)
                     r2 = subprocess.run(cmd_full, cwd=str(dest_dir), capture_output=True, text=True)
                     if r2.returncode == 0:
-                        print(f'  {GREEN}✓{RESET} {display_name} (full clone)')
+                        print(f'  {GREEN}✓{RST} {display_name} (full clone)')
                     else:
-                        print(f'  {RED}✗{RESET} {display_name}: {r2.stderr.strip()[:120]}')
+                        print(f'  {R}✗{RST} {display_name}: {r2.stderr.strip()[:120]}')
         except Exception as e:
             with _lock:
-                print(f'  {RED}✗{RESET} {display_name}: {e}')
+                print(f'  {R}✗{RST} {display_name}: {e}')
 
     with ThreadPoolExecutor(max_workers=4) as pool:
         pool.map(_do_clone, urls)
 
 
 def parallel_download_list(items, max_workers=4):
+    """
+    Fan out a list of download() calls concurrently.
+    """
     if not items:
         return
 
@@ -188,7 +187,7 @@ def parallel_download_list(items, max_workers=4):
         try:
             get_ipython().run_line_magic('download', item)
         except Exception as e:
-            print(f'  {RED}download error: {e}{RESET}')
+            print(f'  {R}download error: {e}{RST}')
 
     with ThreadPoolExecutor(max_workers=max_workers) as pool:
         pool.map(_do, items)
@@ -348,11 +347,11 @@ def webui_req(U, W, M):
         e = 'jpg' if U == 'Forge-Classic' else 'png'
         SyS(f'rm -f {W}/html/card-no-preview.{e}')
 
-        parallel_download_list([
+        for ass in [
             f'https://huggingface.co/gutris1/webui/resolve/main/misc/card-no-preview.png {W}/html card-no-preview.{e}',
             f'https://github.com/gutris1/segsmaker/raw/main/config/NoCrypt_miku.json {W}/tmp/gradio_themes',
             f'https://github.com/gutris1/segsmaker/raw/main/config/user.css {W} user.css'
-        ], max_workers=3)
+        ]: download(ass)
 
         if U != 'Forge': download(f'https://github.com/gutris1/segsmaker/raw/main/config/config.json {W} config.json')
 
@@ -374,10 +373,10 @@ def WebUIExtensions(U, W, M):
             clone(str(node_list_path))
         print()
 
-        parallel_download_list([
+        for faces in [
             f'https://github.com/sczhou/CodeFormer/releases/download/v0.1.0/codeformer.pth {M}/facerestore_models',
             f'https://github.com/TencentARC/GFPGAN/releases/download/v1.3.4/GFPGANv1.4.pth {M}/facerestore_models'
-        ])
+        ]: download(faces)
 
     else:
         say('<br><b>【{red} Installing Extensions{d} 】{red}</b>')
@@ -405,16 +404,16 @@ def installing_webui(U, W):
         f'https://huggingface.co/madebyollin/sdxl-vae-fp16-fix/resolve/main/sdxl.vae.safetensors {V} sdxl_vae.safetensors'
     ]
 
-    parallel_download_list(extras)
+    for i in extras: download(i)
     SyS(f"unzip -qo {W / 'embeddingsXL.zip'} -d {E} && rm {W / 'embeddingsXL.zip'}")
 
     if U != 'SwarmUI': WebUIExtensions(U, W, M)
 
     bg = getattr(webui_req, '_upscaler_thread', None)
     if bg and bg.is_alive():
-        print(f'\n  {YELLOW}Waiting for upscaler downloads to finish…{RESET}')
+        print(f'\n  \033[33mWaiting for upscaler downloads to finish…{RST}')
         bg.join()
-        print(f'  {GREEN}✓ Upscalers ready.{RESET}\n')
+        print(f'  {GREEN}✓ Upscalers ready.{RST}\n')
 
 def webui_install(ui):
     with loading:
