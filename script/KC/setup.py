@@ -41,6 +41,13 @@ def getArgs():
     parser.add_argument('--webui', required=True, help='available webui: A1111, Forge, ReForge, ReForge-old, Forge-Classic, Forge-Neo, ComfyUI, SwarmUI')
     parser.add_argument('--civitai_key', required=True, help='your CivitAI API key')
     parser.add_argument('--hf_read_token', default=None, help='your Huggingface READ Token (optional)')
+    parser.add_argument('--parallel_downloads', default='True', help='enable parallel setup downloads')
+    parser.add_argument('--max_parallel_downloads', default='3', help='maximum simultaneous setup downloads')
+    parser.add_argument('--aria_connections', default='16', help='aria2 max connections per server')
+    parser.add_argument('--aria_split', default='16', help='aria2 split count')
+    parser.add_argument('--min_split_size', default='1M', help='aria2 minimum split size')
+    parser.add_argument('--skip_completed_files', default='True', help='skip existing downloaded files')
+    parser.add_argument('--fallback_to_wget', default='True', help='fallback to curl/wget compatible mode when aria fails')
 
     args, unknown = parser.parse_known_args()
 
@@ -67,7 +74,40 @@ def getArgs():
     if re.search(r'\s+', arg3): arg3 = ''
 
     selected_ui = next(option for option in WEBUI_LIST if arg1 == option.lower())
-    return selected_ui, arg2, arg3
+    parallel_downloads = str(args.parallel_downloads).strip().lower() in {'1', 'true', 'yes', 'on'}
+    try:
+        max_parallel_downloads = max(1, min(int(args.max_parallel_downloads), 8))
+    except Exception:
+        max_parallel_downloads = 3
+
+    def bounded_aria(value):
+        try:
+            return max(1, min(int(value), 16))
+        except Exception:
+            return 16
+
+    aria_connections = bounded_aria(args.aria_connections)
+    aria_split = bounded_aria(args.aria_split)
+    min_split_size = args.min_split_size or '1M'
+    skip_completed_files = str(args.skip_completed_files).strip().lower() in {'1', 'true', 'yes', 'on'}
+    fallback_to_wget = str(args.fallback_to_wget).strip().lower() in {'1', 'true', 'yes', 'on'}
+
+    return (
+        selected_ui, arg2, arg3, parallel_downloads, max_parallel_downloads,
+        aria_connections, aria_split, min_split_size, skip_completed_files, fallback_to_wget
+    )
+
+def fast_download_many(items, parallel=None):
+    return download_many(
+        items,
+        max_workers=max_parallel_downloads,
+        parallel=parallel_downloads if parallel is None else parallel,
+        aria_connections=aria_connections,
+        aria_split=aria_split,
+        min_split_size=min_split_size,
+        skip_completed=skip_completed_files,
+        fallback_to_wget=fallback_to_wget,
+    )
 
 def getPython():
     global PYV
@@ -340,25 +380,18 @@ def webui_req(U, W, M):
     ]
 
     line = scripts + upscalers
-    from nenen88 import parallel_batch_download
-    _batch = []
-    for item in line:
-        p = item.split(None, 2)
-        _url = p[0]
-        _dest = str(p[1]) if len(p) > 1 else str(Path.cwd())
-        _fn = p[2] if len(p) > 2 else None
-        _batch.append((_url, _dest, _fn))
-    parallel_batch_download(_batch, max_workers=5)
+    fast_download_many(line)
 
     if U not in ['SwarmUI', 'ComfyUI']:
         e = 'jpg' if U in ['Forge-Classic', 'Forge-Neo'] else 'png'
         SyS(f'rm -f {W}/html/card-no-preview.{e}')
 
-        for ass in [
+        assets = [
             f'https://huggingface.co/gutris1/webui/resolve/main/misc/card-no-preview.png {W}/html card-no-preview.{e}',
             f'https://github.com/N3iKos/segsmaker-prallel/raw/main/config/NoCrypt_miku.json {W}/tmp/gradio_themes',
             f'https://github.com/N3iKos/segsmaker-prallel/raw/main/config/user.css {W} user.css'
-        ]: download(ass)
+        ]
+        fast_download_many(assets)
 
         if U not in ['Forge', 'Forge-Neo']: download(f'https://github.com/N3iKos/segsmaker-prallel/raw/main/config/config.json {W} config.json')
 
@@ -371,10 +404,11 @@ def webui_extension(U, W, M):
         clone(str(W / 'asd/custom_nodes.txt'))
         print()
 
-        for faces in [
+        faces_downloads = [
             f'https://github.com/sczhou/CodeFormer/releases/download/v0.1.0/codeformer.pth {M}/facerestore_models',
             f'https://github.com/TencentARC/GFPGAN/releases/download/v1.3.4/GFPGANv1.4.pth {M}/facerestore_models'
-        ]: download(faces)
+        ]
+        fast_download_many(faces_downloads)
 
     else:
         say('<br><b>【{red} Installing Extensions{d} 】{red}</b>')
@@ -393,12 +427,7 @@ def webui_installation(U, W):
         f'https://huggingface.co/madebyollin/sdxl-vae-fp16-fix/resolve/main/sdxl.vae.safetensors {V} sdxl_vae.safetensors'
     ]
 
-    from nenen88 import parallel_batch_download
-    _batch = []
-    for i in extras:
-        p = i.split(None, 2)
-        _batch.append((p[0], str(p[1]), p[2] if len(p) > 2 else None))
-    parallel_batch_download(_batch, max_workers=2)
+    fast_download_many(extras)
     SyS(f"unzip -qo {W / 'embeddingsXL.zip'} -d {E} && rm {W / 'embeddingsXL.zip'}")
 
     if U != 'SwarmUI': webui_extension(U, W, M)
@@ -517,7 +546,10 @@ SRC.mkdir(parents=True, exist_ok=True)
 output = widgets.Output()
 loading = widgets.Output()
 
-webui, civitai_key, hf_read_token = getArgs()
+(
+    webui, civitai_key, hf_read_token, parallel_downloads, max_parallel_downloads,
+    aria_connections, aria_split, min_split_size, skip_completed_files, fallback_to_wget
+) = getArgs()
 if civitai_key is None: sys.exit()
 
 display(output, loading)
@@ -525,25 +557,5 @@ with loading: display(Image(url=IMG))
 with output: PY.exists() or getPython()
 notebook_scripts()
 
-from nenen88 import clone, say, download, tempe, pull
+from nenen88 import clone, say, download, download_many, tempe, pull
 webui_installer()
-
-# Expose path variables for notebook cells
-import builtins
-if webui:
-    _ui = webui
-    _W = HOME / _ui
-    _M = _W / 'Models' if _ui == 'SwarmUI' else _W / 'models'
-    builtins.WebUI = _W
-    builtins.CKPT = _M / 'checkpoints' if _ui == 'ComfyUI' else (_M / 'Stable-Diffusion' if _ui == 'SwarmUI' else _M / 'Stable-diffusion')
-    builtins.LORA = _M / 'loras' if _ui == 'ComfyUI' else _M / 'Lora'
-    builtins.VAE = _M / 'vae' if _ui == 'ComfyUI' else _M / 'VAE'
-    builtins.Embeddings = _M / 'Embeddings' if _ui == 'SwarmUI' else (_M / 'embeddings' if _ui in ['Forge-Classic', 'Forge-Neo', 'ComfyUI'] else _W / 'embeddings')
-    builtins.Extensions = _W / 'custom_nodes' if _ui == 'ComfyUI' else _W / 'extensions'
-    builtins.Upscalers = _M / 'upscale_models' if _ui in ['ComfyUI', 'SwarmUI'] else _M / 'ESRGAN'
-    builtins.UNET = _M / 'unet'
-    builtins.CLIP = _M / 'clip'
-    builtins.TMP_CKPT = TMP / 'ckpt'
-    builtins.TMP_LORA = TMP / 'lora'
-    builtins.WebUI_Output = _W / 'output'
-    builtins.Controlnet_Widget = str(_W / 'asd/cnxl.py')
