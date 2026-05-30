@@ -41,7 +41,7 @@ def getArgs():
     parser.add_argument('--webui', required=True, help='available webui: A1111, Forge, ReForge, ReForge-old, Forge-Classic, Forge-Neo, ComfyUI, SwarmUI')
     parser.add_argument('--civitai_key', required=True, help='your CivitAI API key')
     parser.add_argument('--hf_read_token', default=None, help='your Huggingface READ Token (optional)')
-    parser.add_argument('--repo_raw_base', default='https://raw.githubusercontent.com/gutris1/segsmaker/main', help='raw base URL for Segsmaker support scripts')
+    parser.add_argument('--repo_raw_base', default='https://raw.githubusercontent.com/N3iKos/segsmaker-prallel/main', help='raw base URL for Segsmaker support scripts')
 
     args, unknown = parser.parse_known_args()
 
@@ -306,7 +306,7 @@ def webui_req(U, W, M):
     CD(W)
 
     if U != 'SwarmUI':
-        pull(f'https://github.com/gutris1/segsmaker {U.lower()} {W}')
+        pull(f'https://github.com/N3iKos/segsmaker-prallel {U.lower()} {W}')
     else:
         M.mkdir(parents=True, exist_ok=True)
         for sub in ['Stable-Diffusion', 'Lora', 'Embeddings', 'VAE', 'upscale_models']:
