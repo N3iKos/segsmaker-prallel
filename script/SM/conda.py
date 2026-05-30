@@ -82,7 +82,7 @@ def LoadCSS():
     display(HTML(f'<style>{open(css).read()}</style>'))
 
 def KeyInject(civitai_key, hf_token):
-    SyS(f'curl -sLo {nenen} https://github.com/N3iKos/segsmaker-prallel/raw/main/script/nenen88.py')
+    SyS(f'curl -sLo {nenen} https://github.com/gutris1/segsmaker/raw/main/script/nenen88.py')
 
     p = Path(nenen)
     v = p.read_text()
@@ -151,11 +151,11 @@ def KeyCheck():
 
 def CondaMisc():
     for scr in [
-        f'curl -sLo {css} https://github.com/N3iKos/segsmaker-prallel/raw/main/script/SM/segsmaker.css',
-        f'curl -sLo {startup}/00-startup.py https://github.com/N3iKos/segsmaker-prallel/raw/main/script/SM/00-startup.py',
-        f'curl -sLo {startup}/util.py https://github.com/N3iKos/segsmaker-prallel/raw/main/script/SM/util.py',
-        f'curl -sLo {img} https://github.com/N3iKos/segsmaker-prallel/raw/main/script/loading.png',
-        f'curl -sLo {startup}/cupang.py https://github.com/N3iKos/segsmaker-prallel/raw/main/script/cupang.py'
+        f'curl -sLo {css} https://github.com/gutris1/segsmaker/raw/main/script/SM/segsmaker.css',
+        f'curl -sLo {startup}/00-startup.py https://github.com/gutris1/segsmaker/raw/main/script/SM/00-startup.py',
+        f'curl -sLo {startup}/util.py https://github.com/gutris1/segsmaker/raw/main/script/SM/util.py',
+        f'curl -sLo {img} https://github.com/gutris1/segsmaker/raw/main/script/loading.png',
+        f'curl -sLo {startup}/cupang.py https://github.com/gutris1/segsmaker/raw/main/script/cupang.py'
     ]: SyS(scr)
 
 CondaMisc()

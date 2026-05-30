@@ -2,14 +2,11 @@ TOKET = ''
 TOBRUT = ''
 
 from IPython.core.magic import register_line_magic
-from IPython.display import display, HTML, clear_output
+from IPython.display import display, HTML
 from urllib.parse import urlparse
 from IPython import get_ipython
 from pathlib import Path
 from tqdm import tqdm
-from concurrent.futures import ThreadPoolExecutor, as_completed
-from dataclasses import dataclass, field
-import threading
 import subprocess
 import requests
 import zipfile
@@ -19,7 +16,6 @@ import sys
 import re
 import os
 import io
-import time
 
 MAGENTA = '\033[35m'
 RED = '\033[31m'
@@ -38,291 +34,6 @@ iRON = os.environ
 KAGGLE = 'KAGGLE_DATA_PROXY_TOKEN' in iRON
 
 CIVITAI = ['civitai.com', 'civitai.red']
-
-@dataclass
-class DownloadTask:
-    index: int
-    raw: str
-    url: str = ''
-    path: Path | None = None
-    filename: str | None = None
-    label: str = ''
-    status: str = 'Queued'
-    percent: float = 0.0
-    speed: str = 'N/A'
-    error: str = ''
-    started_at: float = 0.0
-    finished_at: float = 0.0
-    size_bytes: int = 0
-
-@dataclass
-class DownloadProgress:
-    tasks: list[DownloadTask] = field(default_factory=list)
-    lock: threading.Lock = field(default_factory=threading.Lock)
-    started_at: float = field(default_factory=time.time)
-
-    def snapshot(self):
-        with self.lock:
-            return [DownloadTask(**task.__dict__) for task in self.tasks]
-
-def _safe_worker_count(max_workers):
-    try:
-        workers = int(max_workers)
-    except Exception:
-        workers = 3
-    return max(1, min(workers, 8))
-
-def _safe_aria_number(value, default=16):
-    try:
-        number = int(value)
-    except Exception:
-        number = default
-    return max(1, min(number, 16))
-
-def _format_bytes(size):
-    try:
-        size = float(size or 0)
-    except Exception:
-        size = 0
-    units = ['B', 'KB', 'MB', 'GB', 'TB']
-    for unit in units:
-        if size < 1024 or unit == units[-1]:
-            return f'{size:,.2f} {unit}' if unit != 'B' else f'{int(size)} B'
-        size /= 1024
-
-def _format_duration(seconds):
-    try:
-        seconds = float(seconds or 0)
-    except Exception:
-        seconds = 0
-    return f'{seconds:.1f}s'
-
-def _format_speed(size, seconds):
-    try:
-        seconds = float(seconds or 0)
-        if seconds <= 0:
-            return 'N/A'
-        return f'{(float(size or 0) / seconds) / (1024 * 1024):6.2f} MB/s'
-    except Exception:
-        return 'N/A'
-
-def _task_file_path(task):
-    if not task.path or not task.filename:
-        return None
-    return Path(task.path).expanduser() / task.filename
-
-def _download_filename(url, is_known_host):
-    if is_known_host:
-        try:
-            return get_fn(url)
-        except Exception:
-            return Path(urlparse(url).path).name or 'download'
-    return Path(urlparse(url).path).name or 'download'
-
-def _parse_download_task(index, line, default_cwd=None):
-    raw = str(line or '').strip()
-    if not raw:
-        return DownloadTask(index=index, raw='', status='Skipped', error='empty slot')
-
-    parts = raw.split()
-    url = parts[0].replace('\\', '')
-    cwd = Path(default_cwd or Path.cwd()).expanduser()
-    known_host = any(domain in url for domain in [*CIVITAI, 'huggingface.co', 'github.com'])
-
-    def is_path(value):
-        return '/' in value or '~/' in value
-
-    try:
-        if len(parts) >= 3:
-            arg1, arg2 = parts[1], parts[2]
-            path_arg, file_arg = (arg2, arg1) if is_path(arg2) and not is_path(arg1) else \
-                                 (arg1, arg2) if is_path(arg1) and not is_path(arg2) else \
-                                 (arg2, arg1) if Path(arg2).suffix == '' and Path(arg1).suffix != '' else \
-                                 (arg1, arg2)
-            path = Path(path_arg).expanduser()
-            filename = file_arg
-        elif len(parts) == 2:
-            arg = parts[1]
-            if is_path(arg):
-                path = Path(arg).expanduser()
-                filename = _download_filename(url, known_host)
-            else:
-                path = cwd
-                filename = arg
-        else:
-            path = cwd
-            filename = _download_filename(url, known_host)
-
-        fallback_name = f'download-{index}'
-        label_source = filename or _download_filename(url, known_host) or fallback_name
-        label = Path(label_source).stem[:28]
-        return DownloadTask(index=index, raw=raw, url=url, path=path, filename=filename, label=label)
-    except Exception as exc:
-        return DownloadTask(index=index, raw=raw, status='Failed', error=str(exc), label=f'link-{index}')
-
-def analyze_download_links(lines, default_cwd=None):
-    tasks = [_parse_download_task(i, line, default_cwd) for i, line in enumerate(lines, start=1)]
-    _print_analysis_summary(tasks)
-    return tasks
-
-def _print_analysis_summary(tasks):
-    print(f'[INFO] Analyzing {len(tasks)} link(s)...')
-    valid = 0
-    for task in tasks:
-        if task.status == 'Skipped':
-            print(f'[SKIP] [{task.index}] empty slot')
-        elif task.status == 'Failed':
-            print(f'[FAIL] [{task.index}] {task.error}')
-        else:
-            valid += 1
-            name = task.filename or task.label or task.url
-            print(f'[OK]   [{task.index}] {name}')
-    print(f'[INFO] Valid: {valid}/{len(tasks)}')
-
-def _progress_bar(percent, width=30):
-    percent = max(0.0, min(100.0, float(percent or 0.0)))
-    filled = int(round(width * percent / 100))
-    return '[' + ('█' * filled) + ('-' * (width - filled)) + ']'
-
-def render_parallel_dashboard(progress, final=False, mode='parallel'):
-    tasks = progress.snapshot()
-    active = sum(1 for task in tasks if task.status == 'Running')
-    done = sum(1 for task in tasks if task.status == 'Done')
-    valid = [task for task in tasks if task.status != 'Skipped']
-    total_percent = sum(task.percent for task in valid) / len(valid) if valid else 100.0
-    elapsed = max(0.0, time.time() - progress.started_at)
-    total_size = sum(task.size_bytes for task in valid)
-    speed = _format_speed(total_size, elapsed)
-
-    clear_output(wait=True)
-    _print_analysis_summary(tasks)
-    print('[INFO] Starting parallel download...')
-    print(f'TOTAL: {_progress_bar(total_percent)} {total_percent:5.1f}%')
-    print(f'Speed: {speed} | Active: {active} | Done: {done}/{len(valid)}')
-    print('-' * 70)
-    for task in tasks:
-        if task.status == 'Skipped':
-            continue
-        name = (task.label or task.filename or f'link-{task.index}')[:28]
-        speed = task.speed or 'N/A'
-        print(f'[{task.index:2}] {name:<28} : {task.percent:5.1f}% | {speed:>11} | {task.status}')
-        if final and task.error:
-            print(f'     error: {task.error}')
-
-def format_download_complete(tasks, mode='parallel'):
-    valid = [task for task in tasks if task.status != 'Skipped']
-    done = [task for task in valid if task.status == 'Done']
-    failed = [task for task in valid if task.status == 'Failed']
-    start_times = [task.started_at for task in valid if task.started_at]
-    finish_times = [task.finished_at for task in valid if task.finished_at]
-    elapsed = (max(finish_times) - min(start_times)) if start_times and finish_times else 0
-    total_size = sum(task.size_bytes for task in done)
-
-    print('=' * 70)
-    print('[INFO] Download Complete!' if not failed else '[INFO] Download Finished With Errors')
-    print('-' * 70)
-    for task in done:
-        duration = max(0, task.finished_at - task.started_at)
-        print(f'✅ [{task.index}] {(task.filename or task.label):<40} {_format_bytes(task.size_bytes):>10} {_format_duration(duration):>8}')
-    for task in failed:
-        print(f'❌ [{task.index}] {(task.filename or task.label):<40} {task.error}')
-    print('-' * 70)
-    print(f'Total: {_format_bytes(total_size)} | Time: {_format_duration(elapsed)} ({mode}) | Files: {len(done)}/{len(valid)}')
-    print('=' * 70)
-
-def _run_download_task(task, progress, aria_connections=16, aria_split=16, min_split_size='1M', skip_completed=True, fallback_to_wget=True):
-    with progress.lock:
-        task.status = 'Running'
-        task.started_at = time.time()
-
-    try:
-        task.path.mkdir(parents=True, exist_ok=True)
-        target = _task_file_path(task)
-        if skip_completed and target and target.exists() and target.stat().st_size > 0:
-            with progress.lock:
-                task.size_bytes = target.stat().st_size
-                task.percent = 100.0
-                task.status = 'Done'
-                task.finished_at = time.time()
-                task.speed = _format_speed(task.size_bytes, task.finished_at - task.started_at)
-            return task
-
-        drive_google = 'drive.google.com' in task.url
-
-        try:
-            if drive_google:
-                gdrown(task.url, task.path, task.filename)
-            else:
-                ariari(
-                    task.url, task.path, task.filename, quiet=True,
-                    aria_connections=aria_connections, aria_split=aria_split,
-                    min_split_size=min_split_size
-                )
-        except Exception:
-            if not fallback_to_wget:
-                raise
-            curlly(f"curl -#JL '{task.url}' -o '{task.filename}'", task.filename, cwd=task.path, quiet=True)
-
-        with progress.lock:
-            if target and target.exists():
-                task.size_bytes = target.stat().st_size
-            task.percent = 100.0
-            task.status = 'Done'
-            task.finished_at = time.time()
-            task.speed = _format_speed(task.size_bytes, task.finished_at - task.started_at)
-    except Exception as exc:
-        with progress.lock:
-            task.status = 'Failed'
-            task.error = str(exc)
-            task.finished_at = time.time()
-    return task
-
-def download_many(
-    lines, max_workers=3, parallel=True, default_cwd=None,
-    aria_connections=16, aria_split=16, min_split_size='1M',
-    skip_completed=True, fallback_to_wget=True
-):
-    if isinstance(lines, str):
-        lines = [line for line in lines.splitlines() if line.strip()]
-
-    tasks = analyze_download_links(list(lines), default_cwd=default_cwd)
-    valid = [task for task in tasks if task.status not in {'Skipped', 'Failed'}]
-    if not valid:
-        return tasks
-
-    workers = _safe_worker_count(max_workers)
-    parallel = bool(parallel) and workers > 1 and len(valid) > 1
-    mode = 'parallel' if parallel else 'sequence'
-    if not parallel:
-        progress = DownloadProgress(tasks=tasks)
-        for task in valid:
-            _run_download_task(
-                task, progress, aria_connections=aria_connections,
-                aria_split=aria_split, min_split_size=min_split_size,
-                skip_completed=skip_completed, fallback_to_wget=fallback_to_wget
-            )
-        render_parallel_dashboard(progress, final=True, mode=mode)
-        format_download_complete(tasks, mode=mode)
-        return tasks
-
-    progress = DownloadProgress(tasks=tasks)
-    with ThreadPoolExecutor(max_workers=workers) as executor:
-        futures = [
-            executor.submit(
-                _run_download_task, task, progress,
-                _safe_aria_number(aria_connections), _safe_aria_number(aria_split),
-                str(min_split_size or '1M'), bool(skip_completed), bool(fallback_to_wget)
-            )
-            for task in valid
-        ]
-        while any(not future.done() for future in futures):
-            render_parallel_dashboard(progress, mode=mode)
-            time.sleep(0.75)
-        for future in as_completed(futures):
-            future.result()
-    render_parallel_dashboard(progress, final=True, mode=mode)
-    format_download_complete(tasks, mode=mode)
-    return tasks
 
 @register_line_magic
 def say(line):
@@ -652,7 +363,7 @@ def get_url(url, fn):
 
     return maybe_add_token(url), None, None
 
-def ariari(url, fp, fn, quiet=False, aria_connections=16, aria_split=16, min_split_size='1M'):
+def ariari(url, fp, fn):
     url, j, versionId = get_url(url, fn)
     if not url: return
 
@@ -678,11 +389,7 @@ def ariari(url, fp, fn, quiet=False, aria_connections=16, aria_split=16, min_spl
         'aria2c',
         f"--header=User-Agent: {civitai_headers()['User-Agent'] if f'{civitai}' in url else 'Mozilla/5.0'}",
         '--allow-overwrite=true', '--console-log-level=error', '--stderr=true',
-        '-c',
-        f'-x{_safe_aria_number(aria_connections)}',
-        f'-s{_safe_aria_number(aria_split)}',
-        f'-k{min_split_size or "1M"}',
-        '-j5', '--dir', str(fp)
+        '-c', '-x16', '-s16', '-k1M', '-j5'
     ]
 
     if f'{civitai}/api/download/models/' in url and TOKET: cmd.append(f"--header=Authorization: Bearer {TOKET}")
@@ -724,20 +431,18 @@ def ariari(url, fp, fn, quiet=False, aria_connections=16, aria_split=16, min_spl
                         prog = re.sub(r'(ETA)(:)(\d+\w+)', f"{CYAN}\\1{RESET}\\2{YELLOW}\\3{RESET}", prog)
 
                         lines = prog.splitlines()
-                        if not quiet:
-                            for line in lines:
-                                print(f"\r{' '*300}\r {line}", end='')
-                                sys.stdout.flush()
+                        for line in lines:
+                            print(f"\r{' '*300}\r {line}", end='')
+                            sys.stdout.flush()
 
                         break_line = True
                         break
 
         civitai = None
         error = error_code + error_line
-        if not quiet:
-            for lines in error: print(f'  {lines}')
+        for lines in error: print(f'  {lines}')
 
-        break_line and not quiet and print()
+        break_line and print()
 
         stripe = aria2_output.find('======+====+===========')
         if stripe != -1:
@@ -747,25 +452,21 @@ def ariari(url, fp, fn, quiet=False, aria_connections=16, aria_split=16, min_spl
                     first, _, last = lines.rpartition('|')
                     last = re.sub(r'/', f'{ORANGE}/{RESET}', last)
                     lines = f'{first}|{last}'
-                    if not quiet:
-                        print(f'  {lines}')
+                    print(f'  {lines}')
 
         if j:
             civitai_infotags(j, fp, fn, versionId)
             civitai_preview(j, fp, fn, versionId)
 
         p.wait()
-        if p.returncode != 0:
-            message = error[-1] if error else f'aria2c exited with code {p.returncode}'
-            raise RuntimeError(message)
 
     except KeyboardInterrupt:
         print(f'\n{"":>2}^ Canceled')
 
-def curlly(cmd, fn, cwd=None, quiet=False):
+def curlly(cmd, fn):
     try:
         p = subprocess.Popen(
-            shlex.split(cmd), cwd=str(Path(cwd or Path.cwd()).expanduser()),
+            shlex.split(cmd), cwd=str(Path.cwd()),
             stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             text=True, bufsize=1
         )
@@ -773,14 +474,13 @@ def curlly(cmd, fn, cwd=None, quiet=False):
         prog = re.compile(r'(\d+\.\d+)%')
         curl_output = ''
 
-        pbar = None if quiet else tqdm(
+        with tqdm(
             total=100, desc=f'{fn.ljust(58):>{58 + 2}}', initial=0,
             bar_format='{desc} 【{bar:20}】【{percentage:3.0f}%】',
             ascii='▷▶', file=sys.stdout
-        )
-        try:
+        ) as pbar:
             for line in iter(p.stderr.readline, ''):
-                if pbar is not None and line.strip():
+                if line.strip():
                     match = prog.search(line)
                     if match:
                         progress = float(match.group(1))
@@ -788,14 +488,10 @@ def curlly(cmd, fn, cwd=None, quiet=False):
                         pbar.refresh()
 
                 curl_output += line
-        finally:
-            if pbar is not None:
-                pbar.close()
+            pbar.close()
         p.wait()
 
         if p.returncode != 0:
-            if quiet:
-                raise RuntimeError(curl_output.strip() or f'curl exited with code {p.returncode}')
             if 'curl: (23)' in curl_output:
                 print(
                     f"{'':>2}^ File already exists; download skipped. "
@@ -940,3 +636,103 @@ def tempe(line=''):
     ]
 
     for SUB in DIRS: Path(f'{TMP}/{SUB}').mkdir(parents=True, exist_ok=True)
+
+def parallel_batch_download(queue, max_workers=3):
+    """
+    Download multiple files in parallel using ThreadPoolExecutor.
+    
+    Args:
+        queue: list of tuples (url, dest_path, optional_filename)
+        max_workers: max simultaneous downloads
+    
+    Each worker calls the existing download() pipeline (ariari/netorare).
+    Uses aria2c with maximum speed settings: -x16 -s16 -k1M -j5.
+    """
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    import threading
+    import os
+    import subprocess
+    from pathlib import Path
+    
+    _lock = threading.Lock()
+    _cwd_lock = threading.Lock()
+    
+    total = len(queue)
+    completed = 0
+    errors = 0
+    
+    def _worker(index, url, dest, filename):
+        nonlocal completed, errors
+        try:
+            # Thread-safe directory change + download
+            with _cwd_lock:
+                os.chdir(dest)
+            
+            # Build aria2c command with max speed
+            # Using existing ariari() logic but thread-safe
+            _url, j, versionId = get_url(url, filename)
+            if not _url:
+                with _lock:
+                    errors += 1
+                    print(f'  [{index}/{total}] \033[31m✗\033[0m {url[:60]}')
+                return
+            
+            _fn = filename or get_fn(_url)
+            
+            cmd = [
+                'aria2c',
+                f"--header=User-Agent: {civitai_headers()['User-Agent'] if any(d in _url for d in CIVITAI) else 'Mozilla/5.0'}",
+                '--allow-overwrite=true',
+                '--console-log-level=error',
+                '--stderr=true',
+                '-c', '-x16', '-s16', '-k1M', '-j5',
+                '-d', dest
+            ]
+            
+            # Auth headers
+            if any(f'{d}/api/download/models/' in _url for d in CIVITAI) and TOKET:
+                cmd.append(f"--header=Authorization: Bearer {TOKET}")
+            if TOBRUT and 'huggingface.co' in _url:
+                cmd.append(f'--header=Authorization: Bearer {TOBRUT}')
+            
+            if _fn:
+                cmd += ['-o', _fn]
+            
+            cmd.append(_url)
+            
+            p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            p.wait()
+            
+            if p.returncode == 0:
+                with _lock:
+                    completed += 1
+                    print(f'  [{index}/{total}] \033[38;5;35m✓\033[0m {versionId or _fn or url[:60]}')
+            else:
+                with _lock:
+                    errors += 1
+                    print(f'  [{index}/{total}] \033[31m✗\033[0m {_fn or url[:60]}')
+            
+            # CivitAI metadata
+            if j:
+                civitai_infotags(j, dest, _fn, versionId)
+                civitai_preview(j, dest, _fn, versionId)
+                
+        except Exception as e:
+            with _lock:
+                errors += 1
+                print(f'  [{index}/{total}] \033[31m✗\033[0m Error: {e}')
+    
+    # Execute in parallel
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = {}
+        for i, (url, dest, fn) in enumerate(queue, 1):
+            f = executor.submit(_worker, i, url, dest, fn)
+            futures[f] = i
+        
+        for f in as_completed(futures):
+            pass  # Results already printed by workers
+    
+    # Summary
+    ok = total - errors
+    print(f'  \033[36m▶ {ok}/{total} completed\033[0m')
+    print(f'\n\033[36m▶ Batch complete — \033[38;5;35m{ok} ok\033[0m, \033[31m{errors} error(s)\033[0m\n')
