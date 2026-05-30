@@ -1,5 +1,5 @@
 from IPython.display import display, HTML
-from nenen88 import download, tempe
+from nenen88 import download, download_many, tempe
 from IPython import get_ipython
 from ipywidgets import widgets
 from pathlib import Path
@@ -119,14 +119,9 @@ def Download_Model(b):
             if check.value: download_list.extend(controlnet_xl_list[key])
 
     with output:
-        import nenen88
-        if nenen88.PARALLEL and len(download_list) > 1:
-            download_items = [f"{url} {TMPCN}" for url in download_list]
-            nenen88.download_parallel(download_items)
-        else:
-            CD(TMPCN)
-            for url in download_list: download(url)
-            CD(HOME)
+        CD(TMPCN)
+        download_many(download_list, max_workers=3, parallel=True, default_cwd=TMPCN)
+        CD(HOME)
 
 def load_css():
     if SM or not Path(CSSCN).exists(): SyS(f'curl -sLo {CSSCN} https://github.com/N3iKos/segsmaker-prallel/raw/main/script/controlnet.css')

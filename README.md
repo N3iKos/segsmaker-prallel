@@ -13,6 +13,8 @@
 | Kaggle | [![Open in Kaggle](https://kaggle.com/static/images/open-in-kaggle.svg)](https://www.kaggle.com/code/jejejojo/asdasd) |
 | SageMaker Studio Lab | ![Status](https://img.shields.io/badge/☠️-DEAD-darkred) |
 <br>
+This fork adds a form-driven Colab workflow with optional parallel setup downloads, 5 checkpoint slots, 5 LoRA slots, and dropdown-based WebUI launch presets.
+
 <p align="center">
   <img src="https://github.com/user-attachments/assets/e5c54a3a-69b4-4835-9d4b-cf9302b15b62", max-width=1000px>
   <!-- <img src="https://github.com/user-attachments/assets/e8a6168a-04cd-4aff-b81d-daed71e6bfb3", max-width=1000px>-->

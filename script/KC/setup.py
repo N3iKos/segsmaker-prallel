@@ -37,23 +37,18 @@ def getENV():
     return None, None, None
 
 def getArgs():
-    import nenen88
     parser = argparse.ArgumentParser(description='WebUI Installer Script for Kaggle and Google Colab')
     parser.add_argument('--webui', required=True, help='available webui: A1111, Forge, ReForge, ReForge-old, Forge-Classic, Forge-Neo, ComfyUI, SwarmUI')
     parser.add_argument('--civitai_key', required=True, help='your CivitAI API key')
     parser.add_argument('--hf_read_token', default=None, help='your Huggingface READ Token (optional)')
-    parser.add_argument('--parallel', default='Yes', help='enable parallel downloads (Yes/No)')
-    parser.add_argument('--max_simultaneous', type=int, default=4, help='max simultaneous downloads')
+    parser.add_argument('--parallel_downloads', default='True', help='enable parallel setup downloads')
+    parser.add_argument('--max_parallel_downloads', default='3', help='maximum simultaneous setup downloads')
 
     args, unknown = parser.parse_known_args()
 
     arg1 = args.webui.lower()
     arg2 = args.civitai_key.strip()
     arg3 = args.hf_read_token.strip() if args.hf_read_token else ''
-    
-    # Configure nenen88 parallel settings
-    nenen88.PARALLEL = (args.parallel == 'Yes' or args.parallel is True)
-    nenen88.MAX_WORKERS = args.max_simultaneous
 
     if not any(arg1 == option.lower() for option in WEBUI_LIST):
         print(f'{ERROR}: invalid webui option: "{args.webui}"')
@@ -74,7 +69,13 @@ def getArgs():
     if re.search(r'\s+', arg3): arg3 = ''
 
     selected_ui = next(option for option in WEBUI_LIST if arg1 == option.lower())
-    return selected_ui, arg2, arg3
+    parallel_downloads = str(args.parallel_downloads).strip().lower() in {'1', 'true', 'yes', 'on'}
+    try:
+        max_parallel_downloads = max(1, min(int(args.max_parallel_downloads), 8))
+    except Exception:
+        max_parallel_downloads = 3
+
+    return selected_ui, arg2, arg3, parallel_downloads, max_parallel_downloads
 
 def getPython():
     global PYV
@@ -308,7 +309,6 @@ def sym_link(U, M):
     [SyS(f'ln -s {src} {tg}') for src, tg in cfg['links']]
 
 def webui_req(U, W, M):
-    import nenen88
     CD(W)
 
     if U != 'SwarmUI':
@@ -348,25 +348,22 @@ def webui_req(U, W, M):
     ]
 
     line = scripts + upscalers
-    if nenen88.PARALLEL and len(line) > 1:
-        download_parallel(line)
-    else:
-        for item in line: download(item)
+    download_many(line, max_workers=max_parallel_downloads, parallel=parallel_downloads)
 
     if U not in ['SwarmUI', 'ComfyUI']:
         e = 'jpg' if U in ['Forge-Classic', 'Forge-Neo'] else 'png'
         SyS(f'rm -f {W}/html/card-no-preview.{e}')
 
-        for ass in [
+        assets = [
             f'https://huggingface.co/gutris1/webui/resolve/main/misc/card-no-preview.png {W}/html card-no-preview.{e}',
             f'https://github.com/N3iKos/segsmaker-prallel/raw/main/config/NoCrypt_miku.json {W}/tmp/gradio_themes',
             f'https://github.com/N3iKos/segsmaker-prallel/raw/main/config/user.css {W} user.css'
-        ]: download(ass)
+        ]
+        download_many(assets, max_workers=max_parallel_downloads, parallel=parallel_downloads)
 
         if U not in ['Forge', 'Forge-Neo']: download(f'https://github.com/N3iKos/segsmaker-prallel/raw/main/config/config.json {W} config.json')
 
 def webui_extension(U, W, M):
-    import nenen88
     EXT = W / 'custom_nodes' if U == 'ComfyUI' else W / 'extensions'
     CD(EXT)
 
@@ -375,14 +372,11 @@ def webui_extension(U, W, M):
         clone(str(W / 'asd/custom_nodes.txt'))
         print()
 
-        faces = [
+        faces_downloads = [
             f'https://github.com/sczhou/CodeFormer/releases/download/v0.1.0/codeformer.pth {M}/facerestore_models',
             f'https://github.com/TencentARC/GFPGAN/releases/download/v1.3.4/GFPGANv1.4.pth {M}/facerestore_models'
         ]
-        if nenen88.PARALLEL:
-            download_parallel(faces)
-        else:
-            for f in faces: download(f)
+        download_many(faces_downloads, max_workers=max_parallel_downloads, parallel=parallel_downloads)
 
     else:
         say('<br><b>【{red} Installing Extensions{d} 】{red}</b>')
@@ -390,7 +384,6 @@ def webui_extension(U, W, M):
         if ENVNAME == 'Kaggle': clone('https://github.com/gutris1/sd-image-encryption')
 
 def webui_installation(U, W):
-    import nenen88
     M = W / 'Models' if U == 'SwarmUI' else W / 'models'
     E = M / 'Embeddings' if U == 'SwarmUI' else (M / 'embeddings' if U in ['Forge-Classic', 'Forge-Neo', 'ComfyUI'] else W / 'embeddings')
     V = M / 'vae' if U == 'ComfyUI' else M / 'VAE'
@@ -402,10 +395,7 @@ def webui_installation(U, W):
         f'https://huggingface.co/madebyollin/sdxl-vae-fp16-fix/resolve/main/sdxl.vae.safetensors {V} sdxl_vae.safetensors'
     ]
 
-    if nenen88.PARALLEL:
-        download_parallel(extras)
-    else:
-        for i in extras: download(i)
+    download_many(extras, max_workers=max_parallel_downloads, parallel=parallel_downloads)
     SyS(f"unzip -qo {W / 'embeddingsXL.zip'} -d {E} && rm {W / 'embeddingsXL.zip'}")
 
     if U != 'SwarmUI': webui_extension(U, W, M)
@@ -524,7 +514,7 @@ SRC.mkdir(parents=True, exist_ok=True)
 output = widgets.Output()
 loading = widgets.Output()
 
-webui, civitai_key, hf_read_token = getArgs()
+webui, civitai_key, hf_read_token, parallel_downloads, max_parallel_downloads = getArgs()
 if civitai_key is None: sys.exit()
 
 display(output, loading)
@@ -532,5 +522,5 @@ with loading: display(Image(url=IMG))
 with output: PY.exists() or getPython()
 notebook_scripts()
 
-from nenen88 import clone, say, download, tempe, pull, download_parallel
+from nenen88 import clone, say, download, download_many, tempe, pull
 webui_installer()
