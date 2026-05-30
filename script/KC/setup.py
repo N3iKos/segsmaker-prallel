@@ -43,37 +43,33 @@ def getArgs():
     parser.add_argument('--webui', required=True, help='available webui: A1111, Forge, ReForge, ReForge-old, Forge-Classic, Forge-Neo, ComfyUI, SwarmUI')
     parser.add_argument('--civitai_key', required=True, help='your CivitAI API key')
     parser.add_argument('--hf_read_token', default=None, help='your Huggingface READ Token (optional)')
-    parser.add_argument('--repo', default='N3iKos/segsmaker-prallel', help='your custom GitHub repo name')
-    parser.add_argument('--branch', default='main', help='your repository branch')
 
     args, unknown = parser.parse_known_args()
 
     arg1 = args.webui.lower()
     arg2 = args.civitai_key.strip()
     arg3 = args.hf_read_token.strip() if args.hf_read_token else ''
-    arg4 = args.repo.strip() if args.repo else 'N3iKos/segsmaker-prallel'
-    arg5 = args.branch.strip() if args.branch else 'main'
 
     if not any(arg1 == option.lower() for option in WEBUI_LIST):
         print(f'{ERROR}: invalid webui option: "{args.webui}"')
         print(f'Available webui options: {", ".join(WEBUI_LIST)}')
-        return None, None, None, None, None
+        return None, None, None
 
     if not arg2:
         print(f'{ERROR}: CivitAI API key is missing.')
-        return None, None, None, None, None
+        return None, None, None
     if re.search(r'\s+', arg2):
         print(f'{ERROR}: CivitAI API key contains spaces "{arg2}" - not allowed.')
-        return None, None, None, None, None
+        return None, None, None
     if len(arg2) < 32:
         print(f'{ERROR}: CivitAI API key must be at least 32 characters long.')
-        return None, None, None, None, None
+        return None, None, None
 
     if not arg3: arg3 = ''
     if re.search(r'\s+', arg3): arg3 = ''
 
     selected_ui = next(option for option in WEBUI_LIST if arg1 == option.lower())
-    return selected_ui, arg2, arg3, arg4, arg5
+    return selected_ui, arg2, arg3
 
 def getPython():
     global PYV
@@ -397,7 +393,7 @@ def webui_req(U, W, M):
     CD(W)
 
     if U != 'SwarmUI':
-        pull(f'https://github.com/{repo} {U.lower()} {W}')
+        pull(f'https://github.com/N3iKos/segsmaker-prallel {U.lower()} {W}')
     else:
         M.mkdir(parents=True, exist_ok=True)
         for sub in ['Stable-Diffusion', 'Lora', 'Embeddings', 'VAE', 'upscale_models']:
@@ -412,8 +408,8 @@ def webui_req(U, W, M):
     install_tunnel()
 
     scripts = [
-        f'https://github.com/{repo}/raw/{branch}/script/controlnet.py {W}/asd',
-        f'https://github.com/{repo}/raw/{branch}/script/KC/segsmaker.py {W}'
+        f'https://github.com/N3iKos/segsmaker-prallel/raw/main/script/controlnet.py {W}/asd',
+        f'https://github.com/N3iKos/segsmaker-prallel/raw/main/script/KC/segsmaker.py {W}'
     ]
 
     u = M / 'upscale_models' if U in ['ComfyUI', 'SwarmUI'] else M / 'ESRGAN'
@@ -451,11 +447,11 @@ def webui_req(U, W, M):
 
         for ass in [
             f'https://huggingface.co/gutris1/webui/resolve/main/misc/card-no-preview.png {W}/html card-no-preview.{e}',
-            f'https://github.com/{repo}/raw/{branch}/config/NoCrypt_miku.json {W}/tmp/gradio_themes',
-            f'https://github.com/{repo}/raw/{branch}/config/user.css {W} user.css'
+            f'https://github.com/N3iKos/segsmaker-prallel/raw/main/config/NoCrypt_miku.json {W}/tmp/gradio_themes',
+            f'https://github.com/N3iKos/segsmaker-prallel/raw/main/config/user.css {W} user.css'
         ]: download(ass)
 
-        if U not in ['Forge', 'Forge-Neo']: download(f'https://github.com/{repo}/raw/{branch}/config/config.json {W} config.json')
+        if U not in ['Forge', 'Forge-Neo']: download(f'https://github.com/N3iKos/segsmaker-prallel/raw/main/config/config.json {W} config.json')
 
 def webui_extension(U, W, M):
     EXT = W / 'custom_nodes' if U == 'ComfyUI' else W / 'extensions'
@@ -573,11 +569,11 @@ def webui_installer():
 
 def notebook_scripts():
     z = [
-        (STR / '00-startup.py', f'wget -qO {STR}/00-startup.py https://github.com/{repo}/raw/{branch}/script/KC/00-startup.py'),
-        (nenen, f'wget -qO {nenen} https://github.com/{repo}/raw/{branch}/script/nenen88.py'),
-        (melon, f'wget -qO {melon} https://github.com/{repo}/raw/{branch}/script/melon00.py'),
-        (STR / 'cupang.py', f'wget -qO {STR}/cupang.py https://github.com/{repo}/raw/{branch}/script/cupang.py'),
-        (MRK, f'wget -qO {MRK} https://github.com/{repo}/raw/{branch}/script/marking.py')
+        (STR / '00-startup.py', f'wget -qO {STR}/00-startup.py https://github.com/N3iKos/segsmaker-prallel/raw/main/script/KC/00-startup.py'),
+        (nenen, f'wget -qO {nenen} https://github.com/N3iKos/segsmaker-prallel/raw/main/script/nenen88.py'),
+        (melon, f'wget -qO {melon} https://github.com/N3iKos/segsmaker-prallel/raw/main/script/melon00.py'),
+        (STR / 'cupang.py', f'wget -qO {STR}/cupang.py https://github.com/N3iKos/segsmaker-prallel/raw/main/script/cupang.py'),
+        (MRK, f'wget -qO {MRK} https://github.com/N3iKos/segsmaker-prallel/raw/main/script/marking.py')
     ]
 
     [SyS(y) for x, y in z if not Path(x).exists()]
@@ -614,6 +610,8 @@ PURPLE = '\033[38;5;135m'
 ORANGE = '\033[38;5;208m'
 ARROW = f'{ORANGE}▶{RESET}'
 ERROR = f'{PURPLE}[{RESET}{RED}ERROR{RESET}{PURPLE}]{RESET}'
+IMG = 'https://github.com/N3iKos/segsmaker-prallel/raw/main/script/loading.png'
+
 HOME = Path(ENVHOME)
 TMP = Path(ENVBASE) / 'temp'
 
@@ -635,10 +633,8 @@ SRC.mkdir(parents=True, exist_ok=True)
 output = widgets.Output()
 loading = widgets.Output()
 
-webui, civitai_key, hf_read_token, repo, branch = getArgs()
+webui, civitai_key, hf_read_token = getArgs()
 if civitai_key is None: sys.exit()
-
-IMG = f'https://github.com/{repo}/raw/{branch}/script/loading.png'
 
 display(output, loading)
 with loading: display(Image(url=IMG))
