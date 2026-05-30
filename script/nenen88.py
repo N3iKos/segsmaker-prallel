@@ -153,7 +153,9 @@ def _parse_download_task(index, line, default_cwd=None):
             path = cwd
             filename = _download_filename(url, known_host)
 
-        label = Path(filename or _download_filename(url, known_host)).stem[:28]
+        fallback_name = f'download-{index}'
+        label_source = filename or _download_filename(url, known_host) or fallback_name
+        label = Path(label_source).stem[:28]
         return DownloadTask(index=index, raw=raw, url=url, path=path, filename=filename, label=label)
     except Exception as exc:
         return DownloadTask(index=index, raw=raw, status='Failed', error=str(exc), label=f'link-{index}')

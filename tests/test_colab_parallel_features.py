@@ -33,35 +33,67 @@ def test_batch_download_helpers_are_defined():
 
     assert "ThreadPoolExecutor" in source
     assert "clear_output(wait=True)" in source
+    for expected in [
+        "aria_connections=16",
+        "aria_split=16",
+        "min_split_size='1M'",
+        "skip_completed=True",
+        "fallback_to_wget=True",
+        "format_download_complete",
+    ]:
+        assert expected in source
+
+
+def test_civitai_api_links_get_safe_analysis_labels():
+    source = read_text("script/nenen88.py")
+
+    assert "fallback_name = f'download-{index}'" in source
+    assert "label_source = filename or _download_filename(url, known_host) or fallback_name" in source
+
+
+def test_notebook_download_calls_do_not_display_task_repr():
+    source = joined_notebook_source("notebook/Segsmaker_COLAB.ipynb")
+
+    assert "_download_results = download_many(" in source
+    assert re.search(r"^\s*download_many\(", source, flags=re.MULTILINE) is None
 
 
 def test_colab_notebook_exposes_parallel_setup_and_five_model_lora_slots():
     source = joined_notebook_source("notebook/Segsmaker_COLAB.ipynb")
 
     for param_name in [
-        "Enable_Parallel_Setup",
-        "Setup_Max_Parallel_Downloads",
-        "Enable_Parallel_Model_LoRA_Downloads",
-        "Model_LoRA_Max_Parallel_Downloads",
+        "Parallel_Setup_Download",
+        "Setup_Max_Workers",
+        "Setup_Aria_Connections",
+        "Setup_Aria_Split",
+        "Setup_Min_Split_Size",
+        "download_mode",
+        "parallel_workers",
+        "aria_connections",
+        "aria_split",
+        "min_split_size",
+        "skip_completed_files",
+        "fallback_to_wget",
     ]:
         assert param_name in source
 
     for index in range(1, 6):
-        assert re.search(rf"Model_{index}\s*=", source)
-        assert re.search(rf"LoRA_{index}\s*=", source)
+        assert re.search(rf"Checkpoint_{index}\s*=", source)
+        assert re.search(rf"Lora_{index}\s*=", source)
 
     assert "download_many" in source
+    assert "FLUX Model Downloader" in source
+    assert "Temporary Model Downloader" in source
 
 
 def test_colab_launcher_uses_dropdown_driven_presets():
     source = joined_notebook_source("notebook/Segsmaker_COLAB.ipynb")
 
     for expected in [
-        "Launch_Preset",
-        "Custom_Launch_Args",
-        "Skip_ComfyUI_Check",
-        "NGROK_Token",
-        "ZROK_Token",
+        "Launcher WebUI",
+        "Software",
+        "Ngrok_Token",
+        "Zrok_Token",
         "recommended_args",
     ]:
         assert expected in source
