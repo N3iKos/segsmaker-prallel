@@ -120,7 +120,12 @@ def Download_Model(b):
 
     with output:
         CD(TMPCN)
-        download_many(download_list, max_workers=3, parallel=True, default_cwd=TMPCN)
+        parallel = os.environ.get('SEGSM_PARALLEL_DOWNLOAD', '1') not in {'0', 'false', 'False'}
+        try:
+            max_workers = max(1, min(int(os.environ.get('SEGSM_MAX_WORKERS', '6')), 8))
+        except Exception:
+            max_workers = 6
+        download_many(download_list, max_workers=max_workers, parallel=parallel, default_cwd=TMPCN)
         CD(HOME)
 
 def load_css():
