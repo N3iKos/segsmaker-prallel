@@ -80,9 +80,6 @@ def webui_launch(launch_args, skip_comfyui_check, ngrok_token=None, zrok_token=N
         iRON.setdefault('IIB_ACCESS_CONTROL', 'disable')
         iRON.setdefault('IIB_SKIP_OPTIONAL_DEPS', '1')
 
-        # Auto-upgrade protobuf to avoid ImportError: cannot import name 'runtime_version'
-        SyS('pip install -q --upgrade protobuf')
-
         cmd = f'python3 launch.py {launch_args}'
 
     elif ui in ['ComfyUI', 'SwarmUI']:

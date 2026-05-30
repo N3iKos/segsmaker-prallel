@@ -134,8 +134,7 @@ def install_venv(ui, url, need_space, vnv, fn):
             f'python3 -m venv {vnv}',
             f'{pip} install -U --force-reinstall pip',
             f'{pip} install ipykernel matplotlib pyyaml',
-            f'{pip} install -q comfy-aimdo',
-            f'{pip} install -q "protobuf>=4.21.0"'  # fix: ImportError runtime_version (protobuf vs transformers/tensorflow conflict)
+            f'{pip} install -q comfy-aimdo'
         ]: SyS(f'{cmd} > /dev/null 2>&1')
 
 print('checking env...')
