@@ -2,7 +2,6 @@ R = '\033[31m'
 P = '\033[38;5;135m'
 RST = '\033[0m'
 ERR = f'{P}[{RST}{R}ERROR{RST}{P}]{RST}'
-GREEN = '\033[38;5;35m'
 
 import sys, subprocess
 python_version = subprocess.run(['python', '--version'], capture_output=True, text=True).stdout.split()[1]
@@ -13,9 +12,7 @@ if tuple(map(int, python_version.split('.'))) < (3, 10, 6):
 from IPython.display import display, HTML, clear_output, Image
 from IPython import get_ipython
 from ipywidgets import widgets
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
-import threading
 import shutil
 import shlex
 import json
@@ -127,70 +124,6 @@ def install_tunnel():
 
         if str(binDir) not in iRON.get('PATH', ''): iRON['PATH'] += ':' + str(binDir)
         binPath.chmod(0o755)
-
-def parallel_clone(urls, dest_dir):
-    """
-    Clone multiple git repos into dest_dir simultaneously.
-    """
-    if not urls:
-        return
-
-    _lock = threading.Lock()
-
-    def _do_clone(entry):
-        entry = entry.strip()
-        if not entry or entry.startswith('#'):
-            return
-        if entry.startswith('git clone '):
-            entry = entry[len('git clone '):].strip()
-
-        parts = entry.split()
-        repo_url = parts[0]
-        folder_name = parts[1] if len(parts) > 1 else None
-
-        display_name = folder_name if folder_name else repo_url.split('/')[-1].replace('.git', '')
-
-        cmd = ['git', 'clone', '--depth=1', '--quiet', repo_url]
-        if folder_name:
-            cmd.append(folder_name)
-
-        try:
-            result = subprocess.run(cmd, cwd=str(dest_dir), capture_output=True, text=True)
-            with _lock:
-                if result.returncode == 0:
-                    print(f'  {GREEN}✓{RST} {display_name}')
-                else:
-                    cmd_full = ['git', 'clone', '--quiet', repo_url]
-                    if folder_name:
-                        cmd_full.append(folder_name)
-                    r2 = subprocess.run(cmd_full, cwd=str(dest_dir), capture_output=True, text=True)
-                    if r2.returncode == 0:
-                        print(f'  {GREEN}✓{RST} {display_name} (full clone)')
-                    else:
-                        print(f'  {R}✗{RST} {display_name}: {r2.stderr.strip()[:120]}')
-        except Exception as e:
-            with _lock:
-                print(f'  {R}✗{RST} {display_name}: {e}')
-
-    with ThreadPoolExecutor(max_workers=4) as pool:
-        pool.map(_do_clone, urls)
-
-
-def parallel_download_list(items, max_workers=4):
-    """
-    Fan out a list of download() calls concurrently.
-    """
-    if not items:
-        return
-
-    def _do(item):
-        try:
-            get_ipython().run_line_magic('download', item)
-        except Exception as e:
-            print(f'  {R}download error: {e}{RST}')
-
-    with ThreadPoolExecutor(max_workers=max_workers) as pool:
-        pool.map(_do, items)
 
 def sym_link(U, M):
     configs = {
@@ -333,15 +266,8 @@ def webui_req(U, W, M):
         f'https://huggingface.co/subby2006/NMKD-UltraYandere/resolve/main/4x_NMKD-UltraYandere_300k.pth {u}'
     ]
 
-    line = scripts
+    line = scripts + upscalers
     for item in line: download(item)
-
-    def _bg_upscalers():
-        parallel_download_list(upscalers, max_workers=4)
-
-    bg = threading.Thread(target=_bg_upscalers, daemon=True, name='upscaler-bg')
-    bg.start()
-    webui_req._upscaler_thread = bg
 
     if U not in ['SwarmUI', 'ComfyUI']:
         e = 'jpg' if U == 'Forge-Classic' else 'png'
@@ -361,16 +287,7 @@ def WebUIExtensions(U, W, M):
 
     if U == 'ComfyUI':
         say('<br><b>【{red} Installing Custom Nodes{d} 】{red}</b>')
-        
-        node_list_path = W / 'asd/custom_nodes.txt'
-        if node_list_path.exists():
-            node_urls = [
-                line.strip() for line in node_list_path.read_text().splitlines()
-                if line.strip() and not line.strip().startswith('#')
-            ]
-            parallel_clone(node_urls, EXT)
-        else:
-            clone(str(node_list_path))
+        clone(str(W / 'asd/custom_nodes.txt'))
         print()
 
         for faces in [
@@ -380,16 +297,7 @@ def WebUIExtensions(U, W, M):
 
     else:
         say('<br><b>【{red} Installing Extensions{d} 】{red}</b>')
-        
-        ext_list_path = W / 'asd/extension.txt'
-        if ext_list_path.exists():
-            ext_urls = [
-                line.strip() for line in ext_list_path.read_text().splitlines()
-                if line.strip() and not line.strip().startswith('#')
-            ]
-            parallel_clone(ext_urls, EXT)
-        else:
-            clone(str(ext_list_path))
+        clone(str(W / 'asd/extension.txt'))
 
 def installing_webui(U, W):
     M = W / 'Models' if U == 'SwarmUI' else W / 'models'
@@ -408,12 +316,6 @@ def installing_webui(U, W):
     SyS(f"unzip -qo {W / 'embeddingsXL.zip'} -d {E} && rm {W / 'embeddingsXL.zip'}")
 
     if U != 'SwarmUI': WebUIExtensions(U, W, M)
-
-    bg = getattr(webui_req, '_upscaler_thread', None)
-    if bg and bg.is_alive():
-        print(f'\n  \033[33mWaiting for upscaler downloads to finish…{RST}')
-        bg.join()
-        print(f'  {GREEN}✓ Upscalers ready.{RST}\n')
 
 def webui_install(ui):
     with loading:
