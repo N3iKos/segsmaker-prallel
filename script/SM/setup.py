@@ -3,6 +3,11 @@ P = '\033[38;5;135m'
 RST = '\033[0m'
 ERR = f'{P}[{RST}{R}ERROR{RST}{P}]{RST}'
 
+GREEN = '\033[32m'
+YELLOW = '\033[33m'
+RED = '\033[31m'
+RESET = '\033[0m'
+
 import sys, subprocess
 python_version = subprocess.run(['python', '--version'], capture_output=True, text=True).stdout.split()[1]
 if tuple(map(int, python_version.split('.'))) < (3, 10, 6):
@@ -12,7 +17,9 @@ if tuple(map(int, python_version.split('.'))) < (3, 10, 6):
 from IPython.display import display, HTML, clear_output, Image
 from IPython import get_ipython
 from ipywidgets import widgets
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
+import threading
 import shutil
 import shlex
 import json
@@ -45,13 +52,17 @@ iRON = os.environ
 
 def SM_Script(WEBUI):
     return [
-        f'https://github.com/N3iKos/segsmaker-prallel/raw/main/script/SM/venv.py {WEBUI}',
-        f'https://github.com/N3iKos/segsmaker-prallel/raw/main/script/SM/Launcher.py {WEBUI}',
-        f'https://github.com/N3iKos/segsmaker-prallel/raw/main/script/SM/segsmaker.py {WEBUI}'
+        f'https://github.com/gutris1/segsmaker/raw/main/script/SM/venv.py {WEBUI}',
+        f'https://github.com/gutris1/segsmaker/raw/main/script/SM/Launcher.py {WEBUI}',
+        f'https://github.com/gutris1/segsmaker/raw/main/script/SM/segsmaker.py {WEBUI}'
     ]
 
 def CN_Script(WEBUI):
-    return f'https://github.com/N3iKos/segsmaker-prallel/raw/main/script/controlnet.py {WEBUI}/asd'
+    return [
+        f'https://github.com/gutris1/segsmaker/raw/main/script/controlnet.py {WEBUI}/asd',
+        f'https://github.com/gutris1/segsmaker/raw/main/script/cn15.py {WEBUI}/asd',
+        f'https://github.com/gutris1/segsmaker/raw/main/script/cnxl.py {WEBUI}/asd',
+    ]
 
 def Load_CSS():
     display(HTML(f'<style>{CSS.read_text()}</style>'))
@@ -120,6 +131,67 @@ def install_tunnel():
 
         if str(binDir) not in iRON.get('PATH', ''): iRON['PATH'] += ':' + str(binDir)
         binPath.chmod(0o755)
+
+def parallel_clone(urls, dest_dir):
+    if not urls:
+        return
+
+    _lock = threading.Lock()
+
+    def _do_clone(entry):
+        entry = entry.strip()
+        if not entry or entry.startswith('#'):
+            return
+        if entry.startswith('git clone '):
+            entry = entry[len('git clone '):].strip()
+
+        parts = entry.split()
+        repo_url = parts[0]
+        folder_name = parts[1] if len(parts) > 1 else None
+
+        display_name = folder_name if folder_name else repo_url.split('/')[-1].replace('.git', '')
+
+        cmd = ['git', 'clone', '--depth=1', '--quiet', repo_url]
+        if folder_name:
+            cmd.append(folder_name)
+
+        try:
+            result = subprocess.run(
+                cmd, cwd=str(dest_dir),
+                capture_output=True, text=True
+            )
+            with _lock:
+                if result.returncode == 0:
+                    print(f'  {GREEN}✓{RESET} {display_name}')
+                else:
+                    cmd_full = ['git', 'clone', '--quiet', repo_url]
+                    if folder_name:
+                        cmd_full.append(folder_name)
+                    r2 = subprocess.run(cmd_full, cwd=str(dest_dir), capture_output=True, text=True)
+                    if r2.returncode == 0:
+                        print(f'  {GREEN}✓{RESET} {display_name} (full clone)')
+                    else:
+                        print(f'  {RED}✗{RESET} {display_name}: {r2.stderr.strip()[:120]}')
+        except Exception as e:
+            with _lock:
+                print(f'  {RED}✗{RESET} {display_name}: {e}')
+
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        pool.map(_do_clone, urls)
+
+
+def parallel_download_list(items, max_workers=4):
+    if not items:
+        return
+
+    def _do(item):
+        try:
+            get_ipython().run_line_magic('download', item)
+        except Exception as e:
+            print(f'  {RED}download error: {e}{RESET}')
+
+    with ThreadPoolExecutor(max_workers=max_workers) as pool:
+        pool.map(_do, items)
 
 def sym_link(U, M):
     configs = {
@@ -233,7 +305,7 @@ def webui_req(U, W, M):
     CD(W)
 
     if U != 'SwarmUI':
-        pull(f'https://github.com/N3iKos/segsmaker-prallel {U.lower()} {W}')
+        pull(f'https://github.com/gutris1/segsmaker {U.lower()} {W}')
     else:
         M.mkdir(parents=True, exist_ok=True)
         for sub in ['Stable-Diffusion', 'Lora', 'Embeddings', 'VAE', 'upscale_models']:
@@ -247,7 +319,7 @@ def webui_req(U, W, M):
     sym_link(U, M)
 
     scripts = SM_Script(W)
-    scripts.append(CN_Script(W))
+    scripts.extend(CN_Script(W))
 
     u = M / 'upscale_models' if U in ['ComfyUI', 'SwarmUI'] else M / 'ESRGAN'
     upscalers = [
@@ -262,20 +334,27 @@ def webui_req(U, W, M):
         f'https://huggingface.co/subby2006/NMKD-UltraYandere/resolve/main/4x_NMKD-UltraYandere_300k.pth {u}'
     ]
 
-    line = scripts + upscalers
+    line = scripts
     for item in line: download(item)
+
+    def _bg_upscalers():
+        parallel_download_list(upscalers, max_workers=4)
+
+    bg = threading.Thread(target=_bg_upscalers, daemon=True, name='upscaler-bg')
+    bg.start()
+    webui_req._upscaler_thread = bg
 
     if U not in ['SwarmUI', 'ComfyUI']:
         e = 'jpg' if U == 'Forge-Classic' else 'png'
         SyS(f'rm -f {W}/html/card-no-preview.{e}')
 
-        for ass in [
+        parallel_download_list([
             f'https://huggingface.co/gutris1/webui/resolve/main/misc/card-no-preview.png {W}/html card-no-preview.{e}',
-            f'https://github.com/N3iKos/segsmaker-prallel/raw/main/config/NoCrypt_miku.json {W}/tmp/gradio_themes',
-            f'https://github.com/N3iKos/segsmaker-prallel/raw/main/config/user.css {W} user.css'
-        ]: download(ass)
+            f'https://github.com/gutris1/segsmaker/raw/main/config/NoCrypt_miku.json {W}/tmp/gradio_themes',
+            f'https://github.com/gutris1/segsmaker/raw/main/config/user.css {W} user.css'
+        ], max_workers=3)
 
-        if U != 'Forge': download(f'https://github.com/N3iKos/segsmaker-prallel/raw/main/config/config.json {W} config.json')
+        if U != 'Forge': download(f'https://github.com/gutris1/segsmaker/raw/main/config/config.json {W} config.json')
 
 def WebUIExtensions(U, W, M):
     EXT = W / 'custom_nodes' if U == 'ComfyUI' else W / 'extensions'
@@ -283,17 +362,35 @@ def WebUIExtensions(U, W, M):
 
     if U == 'ComfyUI':
         say('<br><b>【{red} Installing Custom Nodes{d} 】{red}</b>')
-        clone(str(W / 'asd/custom_nodes.txt'))
+        
+        node_list_path = W / 'asd/custom_nodes.txt'
+        if node_list_path.exists():
+            node_urls = [
+                line.strip() for line in node_list_path.read_text().splitlines()
+                if line.strip() and not line.strip().startswith('#')
+            ]
+            parallel_clone(node_urls, EXT)
+        else:
+            clone(str(node_list_path))
         print()
 
-        for faces in [
+        parallel_download_list([
             f'https://github.com/sczhou/CodeFormer/releases/download/v0.1.0/codeformer.pth {M}/facerestore_models',
             f'https://github.com/TencentARC/GFPGAN/releases/download/v1.3.4/GFPGANv1.4.pth {M}/facerestore_models'
-        ]: download(faces)
+        ])
 
     else:
         say('<br><b>【{red} Installing Extensions{d} 】{red}</b>')
-        clone(str(W / 'asd/extension.txt'))
+        
+        ext_list_path = W / 'asd/extension.txt'
+        if ext_list_path.exists():
+            ext_urls = [
+                line.strip() for line in ext_list_path.read_text().splitlines()
+                if line.strip() and not line.strip().startswith('#')
+            ]
+            parallel_clone(ext_urls, EXT)
+        else:
+            clone(str(ext_list_path))
 
 def installing_webui(U, W):
     M = W / 'Models' if U == 'SwarmUI' else W / 'models'
@@ -308,10 +405,16 @@ def installing_webui(U, W):
         f'https://huggingface.co/madebyollin/sdxl-vae-fp16-fix/resolve/main/sdxl.vae.safetensors {V} sdxl_vae.safetensors'
     ]
 
-    for i in extras: download(i)
+    parallel_download_list(extras)
     SyS(f"unzip -qo {W / 'embeddingsXL.zip'} -d {E} && rm {W / 'embeddingsXL.zip'}")
 
     if U != 'SwarmUI': WebUIExtensions(U, W, M)
+
+    bg = getattr(webui_req, '_upscaler_thread', None)
+    if bg and bg.is_alive():
+        print(f'\n  {YELLOW}Waiting for upscaler downloads to finish…{RESET}')
+        bg.join()
+        print(f'  {GREEN}✓ Upscalers ready.{RESET}\n')
 
 def webui_install(ui):
     with loading:
@@ -448,9 +551,9 @@ hbox2.add_class('hbox2')
 
 def Segsmaker_Setup_Widgets():
     for cmd in [
-        f'curl -sLo {CSS} https://github.com/N3iKos/segsmaker-prallel/raw/main/script/SM/setup.css',
-        f'curl -sLo {IMG} https://github.com/N3iKos/segsmaker-prallel/raw/main/script/loading.png',
-        f'curl -sLo {MRK} https://github.com/N3iKos/segsmaker-prallel/raw/main/script/marking.py'
+        f'curl -sLo {CSS} https://github.com/gutris1/segsmaker/raw/main/script/SM/setup.css',
+        f'curl -sLo {IMG} https://github.com/gutris1/segsmaker/raw/main/script/loading.png',
+        f'curl -sLo {MRK} https://github.com/gutris1/segsmaker/raw/main/script/marking.py'
     ]: SyS(cmd)
 
     Load_CSS()
