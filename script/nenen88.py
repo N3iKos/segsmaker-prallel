@@ -301,22 +301,18 @@ def get_url(url, fn):
     civitai = get_civdom(url)
 
     def maybe_add_token(u):
-        # We should NEVER append Civitai token (TOKET) to HuggingFace, GitHub, or other non-Civitai hosts!
-        # Doing so causes "Authorization failed" (401/403) errors.
+        # Add token only for non-Civitai hosts and when TOKET is set.
         try:
             parsed = urlparse(u)
             host = parsed.netloc.lower()
         except:
             return u
 
-        # Only append to Civitai hosts if it is actually Civitai and doesn't already have it
-        if not any(d in host for d in CIVITAI):
+        # If host is Civitai or Backblaze storage, do NOT modify the signed URL.
+        if any(d in host for d in CIVITAI) or host.startswith('b2.'):
             return u
 
         if not TOKET:
-            return u
-
-        if 'token=' in u:
             return u
 
         if '?type=' in u:
@@ -329,8 +325,7 @@ def get_url(url, fn):
 
     elif 'huggingface.co' in url:
         url = url.split('?')[0]
-        is_hf_token = TOBRUT and TOBRUT.strip().startswith('hf_')
-        h = {'User-Agent': 'Mozilla/5.0', **({'Authorization': f'Bearer {TOBRUT.strip()}'} if is_hf_token else {})}
+        h = {'User-Agent': 'Mozilla/5.0', **({'Authorization': f'Bearer {TOBRUT}'} if TOBRUT else {})}
         ext = ['.safetensors', '.pt', '.pth']
         j, versionId = None, None
 
@@ -450,8 +445,7 @@ def ariari(url, fp, fn, on_progress=None):
     ]
 
     if f'{civitai}/api/download/models/' in url and TOKET: cmd.append(f"--header=Authorization: Bearer {TOKET}")
-    is_hf_token = TOBRUT and TOBRUT.strip().startswith('hf_')
-    if is_hf_token and 'huggingface.co' in url: cmd.append(f'--header=Authorization: Bearer {TOBRUT.strip()}')
+    if TOBRUT and 'huggingface.co' in url: cmd.append(f'--header=Authorization: Bearer {TOBRUT}')
 
     if fn: cmd += ['-o', fn]
 
@@ -641,10 +635,7 @@ def pull(line):
     cmd1 += f' {repo}'
     subs(shlex.split(cmd1), cwd=str(fp), **opts)
 
-    repo_name = Path(repo).name
-    if repo_name.lower().endswith('.git'):
-        repo_name = repo_name[:-4]
-    repofold = fp / repo_name
+    repofold = fp / Path(repo).name.rstrip('.git')
 
     cmd2 = f'git sparse-checkout set --no-cone {tarfold}'
     subs(shlex.split(cmd2), cwd=str(repofold), **opts)
