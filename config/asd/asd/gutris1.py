@@ -205,7 +205,8 @@ def pull(line):
     xxx = {'stdout': subprocess.PIPE, 'stderr': subprocess.PIPE, 'check': True}
     zzz = subprocess.run
     zzz(['git', 'clone', '-n', '--depth=1', '--filter=tree:0', repo], cwd=path, **xxx)
-    repofold = os.path.join(path, os.path.basename(repo.rstrip('.git')))
+    repo_clean = repo[:-4] if repo.lower().endswith('.git') else repo
+    repofold = os.path.join(path, os.path.basename(repo_clean))
     zzz(['git', 'sparse-checkout', 'set', '--no-cone', tarfold], cwd=repofold, **xxx)
     zzz(['git', 'checkout'], cwd=repofold, **xxx)
 

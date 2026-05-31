@@ -1,9 +1,12 @@
 from IPython.display import display, Image, clear_output
 from IPython import get_ipython
 from ipywidgets import widgets
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 import subprocess
+import threading
 import argparse
+import shutil
 import shlex
 import json
 import sys
@@ -26,8 +29,6 @@ REPO = {
 }
 
 WEBUI_LIST = ['A1111', 'Forge', 'ReForge', 'ReForge-old', 'Forge-Classic', 'Forge-Neo', 'ComfyUI', 'SwarmUI']
-DEFAULT_RAW_BASE = 'https://github.com/gutris1/segsmaker/raw/main'
-RAW_BASE = DEFAULT_RAW_BASE
 
 def getENV():
     env = {
@@ -43,35 +44,33 @@ def getArgs():
     parser.add_argument('--webui', required=True, help='available webui: A1111, Forge, ReForge, ReForge-old, Forge-Classic, Forge-Neo, ComfyUI, SwarmUI')
     parser.add_argument('--civitai_key', required=True, help='your CivitAI API key')
     parser.add_argument('--hf_read_token', default=None, help='your Huggingface READ Token (optional)')
-    parser.add_argument('--repo_raw_base', default=DEFAULT_RAW_BASE, help='raw GitHub base URL for Segsmaker scripts/config')
 
     args, unknown = parser.parse_known_args()
 
     arg1 = args.webui.lower()
     arg2 = args.civitai_key.strip()
     arg3 = args.hf_read_token.strip() if args.hf_read_token else ''
-    arg4 = (args.repo_raw_base or DEFAULT_RAW_BASE).strip().rstrip('/')
 
     if not any(arg1 == option.lower() for option in WEBUI_LIST):
         print(f'{ERROR}: invalid webui option: "{args.webui}"')
         print(f'Available webui options: {", ".join(WEBUI_LIST)}')
-        return None, None, None, DEFAULT_RAW_BASE
+        return None, None, None
 
     if not arg2:
         print(f'{ERROR}: CivitAI API key is missing.')
-        return None, None, None, DEFAULT_RAW_BASE
+        return None, None, None
     if re.search(r'\s+', arg2):
         print(f'{ERROR}: CivitAI API key contains spaces "{arg2}" - not allowed.')
-        return None, None, None, DEFAULT_RAW_BASE
+        return None, None, None
     if len(arg2) < 32:
         print(f'{ERROR}: CivitAI API key must be at least 32 characters long.')
-        return None, None, None, DEFAULT_RAW_BASE
+        return None, None, None
 
     if not arg3: arg3 = ''
     if re.search(r'\s+', arg3): arg3 = ''
 
     selected_ui = next(option for option in WEBUI_LIST if arg1 == option.lower())
-    return selected_ui, arg2, arg3, arg4
+    return selected_ui, arg2, arg3
 
 def getPython():
     global PYV
@@ -117,14 +116,45 @@ def getPython():
     CD(Path(ENVBASE).parent)
     print(f"\n{ARROW} installing Python Portable {cfg['v']}")
 
-    SyS('sudo apt-get -qq -y install aria2 pv lz4 > /dev/null 2>&1')
+    # Solusi B: Cek Pustaka Prasyarat Terlebih Dahulu Sebelum apt-get install
+    has_aria2 = shutil.which('aria2c') is not None
+    has_pv = shutil.which('pv') is not None
+    has_lz4 = shutil.which('lz4') is not None
+
+    missing = []
+    if not has_aria2: missing.append('aria2')
+    if not has_pv: missing.append('pv')
+    if not has_lz4: missing.append('lz4')
+
+    if missing:
+        print(f"📦 Installing missing packages: {', '.join(missing)}")
+        SyS(f"sudo apt-get -qq -y install {' '.join(missing)} > /dev/null 2>&1")
+    else:
+        print("✅ Pre-requisite packages (aria2, pv, lz4) are already installed. Skipping apt-get install!")
 
     aria = f'aria2c --console-log-level=error --stderr=true -c -x16 -s16 -k1M -j5 {cfg["url"]} -o {fn}'
-    p = subprocess.Popen(shlex.split(aria), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    p.wait()
+    aria_cmd = shlex.split(aria)
+    
+    # Inject optional HuggingFace token if provided and netloc is HuggingFace
+    if 'huggingface.co' in cfg['url'] and hf_read_token and hf_read_token.strip().startswith('hf_'):
+        aria_cmd.append(f'--header=Authorization: Bearer {hf_read_token.strip()}')
+        
+    p = subprocess.Popen(aria_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    stdout, stderr = p.communicate()
+
+    if p.returncode != 0:
+        print(f"\n{ERROR}: Failed to download Python Portable environment.")
+        print(f"URL: {cfg['url']}")
+        if stderr:
+            print(f"Details:\n{stderr.strip()}")
+        sys.exit(1)
 
     SyS(f'pv {fn} | lz4 -d | tar -xf -')
-    Path(f'/{fn}').unlink()
+    
+    # Safely remove downloaded lz4 package
+    archive_path = Path(f'/{fn}')
+    if archive_path.exists():
+        archive_path.unlink()
 
     sys.path.insert(0, PKG)
     if BIN not in iRON['PATH']:
@@ -180,6 +210,68 @@ def install_tunnel():
         SyS(f'wget -qO {name} {url}')
         SyS(f'tar -xzf {name} -C {USR}')
         SyS(f'rm -f {name}')
+
+def parallel_clone(urls, dest_dir):
+    """Clone multiple git repos in parallel using thread pool."""
+    if not urls:
+        return
+
+    _lock = threading.Lock()
+
+    def _do_clone(entry):
+        entry = entry.strip()
+        if not entry or entry.startswith('#'):
+            return
+        if entry.startswith('git clone '):
+            entry = entry[len('git clone '):].strip()
+
+        parts = entry.split()
+        repo_url = parts[0]
+        folder_name = parts[1] if len(parts) > 1 else None
+        display_name = folder_name if folder_name else repo_url.split('/')[-1].replace('.git', '')
+
+        cmd = ['git', 'clone', '--depth=1', '--quiet', repo_url]
+        if folder_name:
+            cmd.append(folder_name)
+
+        try:
+            result = subprocess.run(
+                cmd, cwd=str(dest_dir),
+                capture_output=True, text=True
+            )
+            with _lock:
+                if result.returncode == 0:
+                    print(f'  {GREEN}✓{RESET} {display_name}')
+                else:
+                    # Retry without depth
+                    cmd_full = ['git', 'clone', '--quiet', repo_url]
+                    if folder_name:
+                        cmd_full.append(folder_name)
+                    r2 = subprocess.run(cmd_full, cwd=str(dest_dir), capture_output=True, text=True)
+                    if r2.returncode == 0:
+                        print(f'  {GREEN}✓{RESET} {display_name} (full clone)')
+                    else:
+                        print(f'  {RED}✗{RESET} {display_name}: {r2.stderr.strip()[:120]}')
+        except Exception as e:
+            with _lock:
+                print(f'  {RED}✗{RESET} {display_name}: {e}')
+
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        pool.map(_do_clone, urls)
+
+def parallel_download_list(items, max_workers=4):
+    """Download multiple urls concurrently using the IPython download magic."""
+    if not items:
+        return
+
+    def _do(item):
+        try:
+            get_ipython().run_line_magic('download', item)
+        except Exception as e:
+            print(f'  {RED}download error: {e}{RESET}')
+
+    with ThreadPoolExecutor(max_workers=max_workers) as pool:
+        pool.map(_do, items)
 
 def sym_link(U, M):
     configs = {
@@ -308,7 +400,7 @@ def webui_req(U, W, M):
     CD(W)
 
     if U != 'SwarmUI':
-        pull(f'https://github.com/gutris1/segsmaker {U.lower()} {W}')
+        pull(f'https://github.com/N3iKos/segsmaker-fast {U.lower()} {W}')
     else:
         M.mkdir(parents=True, exist_ok=True)
         for sub in ['Stable-Diffusion', 'Lora', 'Embeddings', 'VAE', 'upscale_models']:
@@ -323,10 +415,10 @@ def webui_req(U, W, M):
     install_tunnel()
 
     scripts = [
-        f'{RAW_BASE}/script/controlnet.py {W}/asd',
-        f'{RAW_BASE}/script/cn15.py {W}/asd',
-        f'{RAW_BASE}/script/cnxl.py {W}/asd',
-        f'{RAW_BASE}/script/KC/segsmaker.py {W}'
+        f'https://github.com/N3iKos/segsmaker-fast/raw/main/script/controlnet.py {W}/asd',
+        f'https://github.com/N3iKos/segsmaker-fast/raw/main/script/cn15.py {W}/asd',
+        f'https://github.com/N3iKos/segsmaker-fast/raw/main/script/cnxl.py {W}/asd',
+        f'https://github.com/N3iKos/segsmaker-fast/raw/main/script/KC/segsmaker.py {W}'
     ]
 
     u = M / 'upscale_models' if U in ['ComfyUI', 'SwarmUI'] else M / 'ESRGAN'
@@ -343,8 +435,17 @@ def webui_req(U, W, M):
         f'https://huggingface.co/subby2006/NMKD-UltraYandere/resolve/main/4x_NMKD-UltraYandere_300k.pth {u}'
     ]
 
-    line = scripts + upscalers
-    for item in line: download(item)
+    # Skrip integrasi (kecil & esensial) diunduh sekuensial terlebih dahulu
+    for item in scripts:
+        download(item)
+
+    # Optimalisasi: Model upscaler diunduh di background thread secara paralel
+    def _bg_upscalers():
+        parallel_download_list(upscalers, max_workers=4)
+
+    bg = threading.Thread(target=_bg_upscalers, daemon=True, name='upscaler-bg')
+    bg.start()
+    webui_req._upscaler_thread = bg
 
     if U not in ['SwarmUI', 'ComfyUI']:
         e = 'jpg' if U in ['Forge-Classic', 'Forge-Neo'] else 'png'
@@ -352,11 +453,12 @@ def webui_req(U, W, M):
 
         for ass in [
             f'https://huggingface.co/gutris1/webui/resolve/main/misc/card-no-preview.png {W}/html card-no-preview.{e}',
-            f'{RAW_BASE}/config/NoCrypt_miku.json {W}/tmp/gradio_themes',
-            f'{RAW_BASE}/config/user.css {W} user.css'
+            f'https://github.com/N3iKos/segsmaker-fast/raw/main/config/NoCrypt_miku.json {W}/tmp/gradio_themes',
+            f'https://github.com/N3iKos/segsmaker-fast/raw/main/config/user.css {W} user.css'
         ]: download(ass)
 
-        if U not in ['Forge', 'Forge-Neo']: download(f'{RAW_BASE}/config/config.json {W} config.json')
+        if U not in ['Forge', 'Forge-Neo']:
+            download(f'https://github.com/N3iKos/segsmaker-fast/raw/main/config/config.json {W} config.json')
 
 def webui_extension(U, W, M):
     EXT = W / 'custom_nodes' if U == 'ComfyUI' else W / 'extensions'
@@ -364,7 +466,15 @@ def webui_extension(U, W, M):
 
     if U == 'ComfyUI':
         say('<br><b>【{red} Installing Custom Nodes{d} 】{red}</b>')
-        clone(str(W / 'asd/custom_nodes.txt'))
+        node_list_path = W / 'asd/custom_nodes.txt'
+        if node_list_path.exists():
+            node_urls = [
+                line.strip() for line in node_list_path.read_text().splitlines()
+                if line.strip() and not line.strip().startswith('#')
+            ]
+            parallel_clone(node_urls, EXT)
+        else:
+            clone(str(node_list_path))
         print()
 
         for faces in [
@@ -374,8 +484,18 @@ def webui_extension(U, W, M):
 
     else:
         say('<br><b>【{red} Installing Extensions{d} 】{red}</b>')
-        clone(str(W / 'asd/extension.txt'))
-        if ENVNAME == 'Kaggle': clone('https://github.com/gutris1/sd-image-encryption')
+        ext_list_path = W / 'asd/extension.txt'
+        if ext_list_path.exists():
+            ext_urls = [
+                line.strip() for line in ext_list_path.read_text().splitlines()
+                if line.strip() and not line.strip().startswith('#')
+            ]
+            parallel_clone(ext_urls, EXT)
+        else:
+            clone(str(ext_list_path))
+
+        if ENVNAME == 'Kaggle':
+            clone('https://github.com/gutris1/sd-image-encryption')
 
 def webui_installation(U, W):
     M = W / 'Models' if U == 'SwarmUI' else W / 'models'
@@ -393,6 +513,13 @@ def webui_installation(U, W):
     SyS(f"unzip -qo {W / 'embeddingsXL.zip'} -d {E} && rm {W / 'embeddingsXL.zip'}")
 
     if U != 'SwarmUI': webui_extension(U, W, M)
+
+    # Tunggu pengunduhan upscaler paralel di background hingga selesai sebelum mengakhiri instalasi
+    bg = getattr(webui_req, '_upscaler_thread', None)
+    if bg and bg.is_alive():
+        print(f'\n  {YELLOW}Waiting for upscaler downloads to finish…{RESET}')
+        bg.join()
+        print(f'  {GREEN}✓ Upscalers ready.{RESET}\n')
 
 def webui_selection(ui):
     with output:
@@ -446,14 +573,14 @@ def webui_installer():
 
 def notebook_scripts():
     z = [
-        (STR / '00-startup.py', f'wget -qO {STR}/00-startup.py {RAW_BASE}/script/KC/00-startup.py'),
-        (nenen, f'wget -qO {nenen} {RAW_BASE}/script/nenen88.py'),
-        (melon, f'wget -qO {melon} {RAW_BASE}/script/melon00.py'),
-        (STR / 'cupang.py', f'wget -qO {STR}/cupang.py {RAW_BASE}/script/cupang.py'),
-        (MRK, f'wget -qO {MRK} {RAW_BASE}/script/marking.py')
+        (STR / '00-startup.py', f'wget -qO {STR}/00-startup.py https://github.com/N3iKos/segsmaker-fast/raw/main/script/KC/00-startup.py'),
+        (nenen, f'wget -qO {nenen} https://github.com/N3iKos/segsmaker-fast/raw/main/script/nenen88.py'),
+        (melon, f'wget -qO {melon} https://github.com/N3iKos/segsmaker-fast/raw/main/script/melon00.py'),
+        (STR / 'cupang.py', f'wget -qO {STR}/cupang.py https://github.com/N3iKos/segsmaker-fast/raw/main/script/cupang.py'),
+        (MRK, f'wget -qO {MRK} https://github.com/N3iKos/segsmaker-fast/raw/main/script/marking.py')
     ]
 
-    [SyS(y) for x, y in z if not Path(x).exists()]
+    [SyS(y) for x, y in z]
 
     j = {
         'ENVNAME': ENVNAME,
@@ -481,11 +608,13 @@ if not ENVNAME:
 
 RESET = '\033[0m'
 RED = '\033[31m'
+GREEN = '\033[38;5;35m'
+YELLOW = '\033[33m'
 PURPLE = '\033[38;5;135m'
 ORANGE = '\033[38;5;208m'
 ARROW = f'{ORANGE}▶{RESET}'
 ERROR = f'{PURPLE}[{RESET}{RED}ERROR{RESET}{PURPLE}]{RESET}'
-IMG = f'{RAW_BASE}/script/loading.png'
+IMG = 'https://github.com/N3iKos/segsmaker-fast/raw/main/script/loading.png'
 
 HOME = Path(ENVHOME)
 TMP = Path(ENVBASE) / 'temp'
@@ -508,8 +637,7 @@ SRC.mkdir(parents=True, exist_ok=True)
 output = widgets.Output()
 loading = widgets.Output()
 
-webui, civitai_key, hf_read_token, RAW_BASE = getArgs()
-IMG = f'{RAW_BASE}/script/loading.png'
+webui, civitai_key, hf_read_token = getArgs()
 if civitai_key is None: sys.exit()
 
 display(output, loading)
