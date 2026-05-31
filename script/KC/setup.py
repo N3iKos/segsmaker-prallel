@@ -26,6 +26,8 @@ REPO = {
 }
 
 WEBUI_LIST = ['A1111', 'Forge', 'ReForge', 'ReForge-old', 'Forge-Classic', 'Forge-Neo', 'ComfyUI', 'SwarmUI']
+DEFAULT_RAW_BASE = 'https://github.com/gutris1/segsmaker/raw/main'
+RAW_BASE = DEFAULT_RAW_BASE
 
 def getENV():
     env = {
@@ -41,34 +43,34 @@ def getArgs():
     parser.add_argument('--webui', required=True, help='available webui: A1111, Forge, ReForge, ReForge-old, Forge-Classic, Forge-Neo, ComfyUI, SwarmUI')
     parser.add_argument('--civitai_key', required=True, help='your CivitAI API key')
     parser.add_argument('--hf_read_token', default=None, help='your Huggingface READ Token (optional)')
-    parser.add_argument('--repo_raw_base', default='https://raw.githubusercontent.com/N3iKos/segsmaker-prallel/main', help='raw base URL for Segsmaker support scripts')
+    parser.add_argument('--repo_raw_base', default=DEFAULT_RAW_BASE, help='raw GitHub base URL for Segsmaker scripts/config')
 
     args, unknown = parser.parse_known_args()
 
     arg1 = args.webui.lower()
     arg2 = args.civitai_key.strip()
     arg3 = args.hf_read_token.strip() if args.hf_read_token else ''
+    arg4 = (args.repo_raw_base or DEFAULT_RAW_BASE).strip().rstrip('/')
 
     if not any(arg1 == option.lower() for option in WEBUI_LIST):
         print(f'{ERROR}: invalid webui option: "{args.webui}"')
         print(f'Available webui options: {", ".join(WEBUI_LIST)}')
-        return None, None, None
+        return None, None, None, DEFAULT_RAW_BASE
 
     if not arg2:
         print(f'{ERROR}: CivitAI API key is missing.')
-        return None, None, None
+        return None, None, None, DEFAULT_RAW_BASE
     if re.search(r'\s+', arg2):
         print(f'{ERROR}: CivitAI API key contains spaces "{arg2}" - not allowed.')
-        return None, None, None
+        return None, None, None, DEFAULT_RAW_BASE
     if len(arg2) < 32:
         print(f'{ERROR}: CivitAI API key must be at least 32 characters long.')
-        return None, None, None
+        return None, None, None, DEFAULT_RAW_BASE
 
     if not arg3: arg3 = ''
     if re.search(r'\s+', arg3): arg3 = ''
 
     selected_ui = next(option for option in WEBUI_LIST if arg1 == option.lower())
-    arg4 = args.repo_raw_base.strip().rstrip('/')
     return selected_ui, arg2, arg3, arg4
 
 def getPython():
@@ -306,7 +308,7 @@ def webui_req(U, W, M):
     CD(W)
 
     if U != 'SwarmUI':
-        pull(f'https://github.com/N3iKos/segsmaker-prallel {U.lower()} {W}')
+        pull(f'https://github.com/gutris1/segsmaker {U.lower()} {W}')
     else:
         M.mkdir(parents=True, exist_ok=True)
         for sub in ['Stable-Diffusion', 'Lora', 'Embeddings', 'VAE', 'upscale_models']:
@@ -388,12 +390,7 @@ def webui_installation(U, W):
     ]
 
     for i in extras: download(i)
-
-    embeddings_zip = W / 'embeddingsXL.zip'
-    if embeddings_zip.exists():
-        SyS(f"unzip -qo {embeddings_zip} -d {E} && rm {embeddings_zip}")
-    else:
-        print(f'{YELLOW}  embeddingsXL.zip was not downloaded; skipping unzip.{RESET}')
+    SyS(f"unzip -qo {W / 'embeddingsXL.zip'} -d {E} && rm {W / 'embeddingsXL.zip'}")
 
     if U != 'SwarmUI': webui_extension(U, W, M)
 
@@ -488,6 +485,8 @@ PURPLE = '\033[38;5;135m'
 ORANGE = '\033[38;5;208m'
 ARROW = f'{ORANGE}▶{RESET}'
 ERROR = f'{PURPLE}[{RESET}{RED}ERROR{RESET}{PURPLE}]{RESET}'
+IMG = f'{RAW_BASE}/script/loading.png'
+
 HOME = Path(ENVHOME)
 TMP = Path(ENVBASE) / 'temp'
 
@@ -510,8 +509,8 @@ output = widgets.Output()
 loading = widgets.Output()
 
 webui, civitai_key, hf_read_token, RAW_BASE = getArgs()
-if civitai_key is None: sys.exit()
 IMG = f'{RAW_BASE}/script/loading.png'
+if civitai_key is None: sys.exit()
 
 display(output, loading)
 with loading: display(Image(url=IMG))

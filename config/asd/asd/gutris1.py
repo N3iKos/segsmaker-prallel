@@ -47,7 +47,7 @@ def say(line):
 
     display(HTML(" ".join(output)))
 
-momoiro = f"-H 'Authorization: Bearer {os.environ.get('CIVITAI_TOKEN', '')}'" if os.environ.get('CIVITAI_TOKEN') else ""
+momoiro = "-H 'Authorization: Bearer 268143672c63a79e3fbf7fa8e9c72603'"
 def download(line):
     args = line.split()
     url, auth = args[0], momoiro if "civitai.com" in args[0] else ""

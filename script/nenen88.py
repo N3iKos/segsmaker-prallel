@@ -14,6 +14,7 @@ import requests
 import zipfile
 import shlex
 import json
+import time
 import sys
 import re
 import os
@@ -32,66 +33,46 @@ RESET = '\033[0m'
 CD = os.chdir
 SyS = get_ipython().system
 
-_TO_BYTES = {
-    'B': 1,
-    'KiB': 1024,
-    'MiB': 1024 ** 2,
-    'GiB': 1024 ** 3,
-    'KB': 1000,
-    'MB': 1000 ** 2,
-    'GB': 1000 ** 3,
-}
+# ─── Aria2c progress helpers ─────────────────────────────────────────────────
+_TO_BYTES = {'B':1,'KiB':1024,'MiB':1024**2,'GiB':1024**3,
+             'KB':1000,'MB':1000**2,'GB':1000**3}
 
 def _parse_aria2_stats(raw):
-    stats = {'pct': 0, 'done_b': 0.0, 'total_b': 0.0, 'speed_b': 0.0, 'eta_s': 0}
+    """Extract numeric stats from a raw aria2c progress line."""
+    s = {'pct':0,'done_b':0.0,'total_b':0.0,'speed_b':0.0,'eta_s':0}
+    m = re.search(r'([\d.]+)(\w+)/([\d.]+)(\w+)\((\d+)%\)', raw)
+    if m:
+        s['done_b']  = float(m.group(1)) * _TO_BYTES.get(m.group(2), 1)
+        s['total_b'] = float(m.group(3)) * _TO_BYTES.get(m.group(4), 1)
+        s['pct']     = int(m.group(5))
+    m = re.search(r'DL:([\d.]+)(\w+)', raw)
+    if m: s['speed_b'] = float(m.group(1)) * _TO_BYTES.get(m.group(2), 1)
+    m = re.search(r'ETA:(\d+)(s|m|h)', raw)
+    if m: s['eta_s'] = int(m.group(1)) * {'s':1,'m':60,'h':3600}[m.group(2)]
+    return s
 
-    size = re.search(r'([\d.]+)(\w+)/([\d.]+)(\w+)\((\d+)%\)', raw)
-    if size:
-        stats['done_b'] = float(size.group(1)) * _TO_BYTES.get(size.group(2), 1)
-        stats['total_b'] = float(size.group(3)) * _TO_BYTES.get(size.group(4), 1)
-        stats['pct'] = int(size.group(5))
+def _fmt_size(b):
+    for u in ('B','KiB','MiB','GiB'):
+        if b < 1024 or u == 'GiB': return f'{b:.1f}{u}'
+        b /= 1024
 
-    speed = re.search(r'DL:([\d.]+)(\w+)', raw)
-    if speed:
-        stats['speed_b'] = float(speed.group(1)) * _TO_BYTES.get(speed.group(2), 1)
-
-    eta = re.search(r'ETA:(?:(\d+)h)?(?:(\d+)m)?(?:(\d+)s)?', raw)
-    if eta:
-        hours = int(eta.group(1) or 0)
-        minutes = int(eta.group(2) or 0)
-        seconds = int(eta.group(3) or 0)
-        stats['eta_s'] = hours * 3600 + minutes * 60 + seconds
-
-    return stats
-
-def _fmt_size(size):
-    for unit in ('B', 'KiB', 'MiB', 'GiB'):
-        if size < 1024 or unit == 'GiB':
-            return f'{size:.1f}{unit}'
-        size /= 1024
-
-def _fmt_eta(seconds):
-    if seconds <= 0:
-        return '?'
-    return f'{seconds}s' if seconds < 60 else f'{seconds // 60}m{seconds % 60:02d}s'
+def _fmt_eta(s):
+    if s <= 0: return '?'
+    return f'{s}s' if s < 60 else f'{s//60}m{s%60:02d}s'
 
 def _fmt_progress(raw):
-    stats = _parse_aria2_stats(raw)
-    conn = re.search(r'CN:(\d+)', raw)
-    parts = [
-        f"{_fmt_size(stats['done_b'])}/{_fmt_size(stats['total_b'])}",
-        f"{stats['pct']}%",
-    ]
-
-    if conn:
-        parts.append(f"CN:{conn.group(1)}")
-    if stats['speed_b']:
-        parts.append(f"DL:{_fmt_size(stats['speed_b'])}/s")
-    if stats['eta_s']:
-        parts.append(f"ETA:{_fmt_eta(stats['eta_s'])}")
-
-    return ' '.join(parts)
-
+    """Apply ANSI formatting to a raw aria2c progress line."""
+    p = raw
+    p = re.sub(r'\[', MAGENTA + '【' + RESET, p)
+    p = re.sub(r'\]', MAGENTA + '】' + RESET, p)
+    p = re.sub(r'(#)(\w+)', f'{CYAN}\\1{RESET}{GREEN}\\2{RESET}', p)
+    p = re.sub(r'(\d+(\.\d+)?)(\w+)(/)(\d+(\.\d+)?)(\w+)',
+               f'\\1{PURPLE}\\3{RESET}{MAGENTA}\\4{RESET}\\5{PURPLE}\\7{RESET}', p)
+    p = re.sub(r'(\()(\d+%)(\))', f'{MAGENTA}\\1{RESET}\\2{MAGENTA}\\3{RESET}', p)
+    p = re.sub(r'(CN)(:)(\d+)', f'{CYAN}\\1{RESET}\\2{ORANGE}\\3{RESET}', p)
+    p = re.sub(r'(DL)(:)([\d.]+)(\w+)', f'{CYAN}\\1{RESET}\\2\\3{PURPLE}\\4{RESET}', p)
+    p = re.sub(r'(ETA)(:)(\d+\w+)', f'{CYAN}\\1{RESET}\\2{YELLOW}\\3{RESET}', p)
+    return p
 iRON = os.environ
 
 KAGGLE = 'KAGGLE_DATA_PROXY_TOKEN' in iRON
@@ -314,8 +295,7 @@ def get_url(url, fn):
     """
     Resolve a user-provided URL into a direct download URL when possible.
     Important fix: do NOT append ?token=... to CivitAI/Backblaze signed URLs (they are sensitive to modification).
-    Only append TOKET for supported non-Civitai hosts when TOKET is set and needed.
-    Hugging Face uses TOBRUT via Authorization header, never a Civitai query token.
+    Only append TOKET for non-Civitai hosts when TOKET is set and needed.
     """
 
     civitai = get_civdom(url)
@@ -328,12 +308,8 @@ def get_url(url, fn):
         except:
             return u
 
-        # If host is Civitai, Hugging Face, or Backblaze storage, do NOT modify the signed URL.
-        if (
-            any(d in host for d in CIVITAI)
-            or host == 'huggingface.co' or host.endswith('.huggingface.co')
-            or host.startswith('b2.')
-        ):
+        # If host is Civitai or Backblaze storage, do NOT modify the signed URL.
+        if any(d in host for d in CIVITAI) or host.startswith('b2.'):
             return u
 
         if not TOKET:
@@ -433,8 +409,7 @@ def get_url(url, fn):
 
 def ariari(url, fp, fn, on_progress=None):
     url, j, versionId = get_url(url, fn)
-    if not url:
-        return False
+    if not url: return
 
     civitai = get_civdom(url)
     civitai_api = (f'{civitai}/api/download/models/' in url and bool(TOKET))
@@ -447,15 +422,19 @@ def ariari(url, fp, fn, on_progress=None):
             final_url = resp.url
             resp.close()
 
-            if final_url and final_url != request_url:
-                url = final_url
-            else:
-                print("  No redirect detected; aria2 will use Authorization header.")
+            if final_url and final_url != request_url: url = final_url
+            else: print("  No redirect detected; aria2 will use Authorization header.")
 
         except Exception as e:
             print(f"  Preflight failed: {e}")
             print("  Falling back to aria2 with Authorization header.")
 
+    # Optimized aria2c flags for cloud network:
+    # -x16 -s16: 16 connections per file, 16 splits — maximizes bandwidth on cloud links
+    # -k1M: 1MB chunk size — optimal for large model files
+    # -j5: up to 5 parallel jobs per aria2c instance
+    # --min-split-size=1M: ensures splits are meaningful
+    # --auto-file-renaming=false: prevents duplicate-name collisions when running parallel
     cmd = [
         'aria2c',
         f"--header=User-Agent: {civitai_headers()['User-Agent'] if f'{civitai}' in url else 'Mozilla/5.0'}",
@@ -465,13 +444,10 @@ def ariari(url, fp, fn, on_progress=None):
         '-c', '-x16', '-s16', '-k1M', '-j5'
     ]
 
-    if f'{civitai}/api/download/models/' in url and TOKET:
-        cmd.append(f"--header=Authorization: Bearer {TOKET}")
-    if TOBRUT and 'huggingface.co' in url:
-        cmd.append(f'--header=Authorization: Bearer {TOBRUT}')
+    if f'{civitai}/api/download/models/' in url and TOKET: cmd.append(f"--header=Authorization: Bearer {TOKET}")
+    if TOBRUT and 'huggingface.co' in url: cmd.append(f'--header=Authorization: Bearer {TOBRUT}')
 
-    if fn:
-        cmd += ['-o', fn]
+    if fn: cmd += ['-o', fn]
 
     cmd.append(url)
 
@@ -481,8 +457,7 @@ def ariari(url, fp, fn, on_progress=None):
 
         while True:
             lines = p.stderr.readline()
-            if lines == '' and p.poll() is not None:
-                break
+            if lines == '' and p.poll() is not None: break
 
             if lines:
                 aria2_output += lines
@@ -498,23 +473,21 @@ def ariari(url, fp, fn, on_progress=None):
                         error_line.append(prog)
 
                     if re.match(r'\[#\w{6}\s.*\]', prog):
-                        raw_prog = prog
+                        raw_prog = prog  # keep raw for stats / callback
                         if on_progress:
                             on_progress(raw_prog)
                         else:
                             formatted = _fmt_progress(raw_prog)
                             print(f"\r{' '*300}\r {formatted}", end='')
                             sys.stdout.flush()
-
                         break_line = True
                         break
 
+        civitai = None
         error = error_code + error_line
-        for lines in error:
-            print(f'  {lines}')
+        for lines in error: print(f'  {lines}')
 
-        if break_line and not on_progress:
-            print()
+        if break_line and not on_progress: print()
 
         stripe = aria2_output.find('======+====+===========')
         if stripe != -1:
@@ -531,11 +504,9 @@ def ariari(url, fp, fn, on_progress=None):
             civitai_preview(j, fp, fn, versionId)
 
         p.wait()
-        return p.returncode == 0 and not error_code and not error_line
 
     except KeyboardInterrupt:
         print(f'\n{"":>2}^ Canceled')
-        return False
 
 def curlly(cmd, fn):
     try:
@@ -550,8 +521,8 @@ def curlly(cmd, fn):
 
         with tqdm(
             total=100, desc=f'{fn.ljust(58):>{58 + 2}}', initial=0,
-            bar_format='{desc} {percentage:3.0f}%',
-            file=sys.stdout
+            bar_format='{desc} 【{bar:20}】【{percentage:3.0f}%】',
+            ascii='▷▶', file=sys.stdout
         ) as pbar:
             for line in iter(p.stderr.readline, ''):
                 if line.strip():
@@ -691,139 +662,135 @@ _print_lock = threading.Lock()
 
 def parallel_batch_download(items, max_workers=3):
     """
-    Download multiple (url, destination, filename) items concurrently.
-    Shows per-slot aria2 progress and a combined aggregate progress line.
+    Download multiple files in parallel with per-slot progress lines + aggregate summary.
+    Each download occupies its own line; a final '【#Parallel ...】' line shows combined stats.
     """
     if not items:
         return {}
 
-    total = len(items)
-    max_workers = max(1, int(max_workers))
+    total  = len(items)
     results = {}
-    state_lock = threading.Lock()
-    state = {}
-    stop_render = threading.Event()
 
-    def set_state(idx, **updates):
-        with state_lock:
-            state.setdefault(idx, {'label': f'file {idx + 1}', 'raw': '', 'done': False, 'ok': True})
-            state[idx].update(updates)
+    # ── Shared progress state (written by workers, read by renderer) ──────────
+    _state_lock = threading.Lock()
+    _state = {}   # idx -> {'label': str, 'raw': str, 'done': bool, 'ok': bool}
 
-    def build_frame():
-        with state_lock:
-            snapshot = {idx: dict(value) for idx, value in state.items()}
+    def _set_state(idx, **kw):
+        with _state_lock:
+            if idx not in _state:
+                _state[idx] = {'label': '', 'raw': '', 'done': False, 'ok': True}
+            _state[idx].update(kw)
+
+    # ── Renderer ──────────────────────────────────────────────────────────────
+    _stop_render = threading.Event()
+
+    def _build_frame():
+        with _state_lock:
+            snap = {k: dict(v) for k, v in _state.items()}
 
         lines_out = []
-        agg_speed = 0.0
-        agg_done = 0.0
-        agg_total = 0.0
-        agg_eta = 0
-        active = 0
+        agg_speed = 0.0; agg_done = 0.0; agg_total = 0.0; agg_eta = 0; active = 0
 
-        for idx in range(total):
-            slot = snapshot.get(idx, {})
-            label = slot.get('label', f'file {idx + 1}')
-            done = slot.get('done', False)
-            ok = slot.get('ok', True)
-            raw = slot.get('raw', '')
+        for i in range(total):
+            slot  = snap.get(i, {})
+            label = slot.get('label', f'file {i+1}')
+            done  = slot.get('done', False)
+            ok    = slot.get('ok', True)
+            raw   = slot.get('raw', '')
 
             if done:
                 icon = f'{GREEN}✓{RESET}' if ok else f'{RED}✗{RESET}'
-                lines_out.append(f'  [{idx + 1}/{total}] {icon} {label}')
+                lines_out.append(f'  [{i+1}/{total}] {icon} {label}')
             elif raw:
                 lines_out.append(f' {_fmt_progress(raw)}')
-                stats = _parse_aria2_stats(raw)
-                agg_speed += stats['speed_b']
-                agg_done += stats['done_b']
-                agg_total += stats['total_b']
-                agg_eta = max(agg_eta, stats['eta_s'])
+                st = _parse_aria2_stats(raw)
+                agg_speed += st['speed_b']; agg_done += st['done_b']
+                agg_total += st['total_b']; agg_eta = max(agg_eta, st['eta_s'])
                 active += 1
             else:
-                lines_out.append(f'  [{idx + 1}/{total}] {YELLOW}...{RESET} {label} starting...')
+                lines_out.append(f'  [{i+1}/{total}] {YELLOW}⏳{RESET} {label} — starting...')
 
+        # Aggregate summary line
         if active > 0:
-            pct = int(100 * agg_done / agg_total) if agg_total else 0
+            pct  = int(100 * agg_done / agg_total) if agg_total else 0
+            spd  = _fmt_size(agg_speed) + '/s'
+            done_s  = _fmt_size(agg_done)
+            total_s = _fmt_size(agg_total)
+            eta  = _fmt_eta(agg_eta)
             agg_line = (
                 f' {MAGENTA}【{RESET}'
                 f'{CYAN}#Parallel{RESET} '
-                f'{_fmt_size(agg_done)}{MAGENTA}/{RESET}{_fmt_size(agg_total)}'
+                f'{done_s}{MAGENTA}/{RESET}{total_s}'
                 f'{MAGENTA}({RESET}{pct}%{MAGENTA}){RESET} '
-                f'{CYAN}DL{RESET}:{PURPLE}{_fmt_size(agg_speed)}/s{RESET} '
-                f'{CYAN}ETA{RESET}:{YELLOW}{_fmt_eta(agg_eta)}{RESET}'
+                f'{CYAN}DL{RESET}:{PURPLE}{spd}{RESET} '
+                f'{CYAN}ETA{RESET}:{YELLOW}{eta}{RESET}'
                 f'{MAGENTA}】{RESET}'
             )
         else:
-            done_count = sum(1 for slot in snapshot.values() if slot.get('done'))
-            agg_line = f'  {CYAN}> {done_count}/{total} completed{RESET}'
+            done_c = sum(1 for s in snap.values() if s.get('done'))
+            agg_line = f'  {CYAN}▶ {done_c}/{total} completed{RESET}'
 
         lines_out.append(agg_line)
         return '\n'.join(lines_out)
 
-    def render_loop():
-        while not stop_render.is_set():
+    def _render_loop():
+        while not _stop_render.is_set():
+            frame = _build_frame()
             clear_output(wait=True)
-            print(build_frame())
+            print(frame)
             sys.stdout.flush()
-            stop_render.wait(0.25)
-
+            _stop_render.wait(0.25)
+        # final frame
         clear_output(wait=True)
-        print(build_frame())
+        print(_build_frame())
         sys.stdout.flush()
 
-    def worker(idx, url, fp, fn):
-        label = fn if fn else Path(urlparse(url).path).name or url
-        set_state(idx, label=label)
-        old_cwd = Path.cwd()
+    renderer = threading.Thread(target=_render_loop, daemon=True, name='progress-renderer')
+    renderer.start()
 
+    # ── Workers ───────────────────────────────────────────────────────────────
+    def _worker(idx, url, fp, fn):
+        label = fn if fn else Path(urlparse(url).path).name or url
+        _set_state(idx, label=label)
         try:
             fp = Path(fp).expanduser()
             fp.mkdir(parents=True, exist_ok=True)
 
-            def on_progress(raw):
-                set_state(idx, raw=raw)
+            def _on_progress(raw):
+                _set_state(idx, raw=raw)
 
-            is_aria = any(domain in url for domain in [*CIVITAI, 'huggingface.co', 'github.com'])
-            if is_aria:
-                ok = bool(ariari(url, fp, fn, on_progress=on_progress))
+            CHG = any(domain in url for domain in [*CIVITAI, 'huggingface.co', 'github.com'])
+            if CHG:
+                ariari(url, fp, fn, on_progress=_on_progress)
             elif 'drive.google.com' in url:
                 gdrown(url, fp, fn)
-                ok = True
             else:
-                CD(fp)
-                cmd = f"curl -#OJL '{url}'" if not fn else f"curl -#L '{url}' -o '{fn}'"
+                cmd = (f"curl -#OJL '{url}'" if not fn else f"curl -#L '{url}' -o '{fn}'")
+                old_cwd = Path.cwd(); CD(fp)
                 curlly(cmd, fn or label)
-                ok = True
+                CD(old_cwd)
 
-            set_state(idx, done=True, ok=ok, raw='')
-            return idx, 'ok' if ok else 'error'
+            _set_state(idx, done=True, ok=True, raw='')
+            return url, 'ok'
         except Exception as e:
-            with _print_lock:
-                print(f'  {RED}download error:{RESET} {label}: {e}')
-            set_state(idx, done=True, ok=False, raw='')
-            return idx, 'error'
-        finally:
-            CD(old_cwd)
+            _set_state(idx, done=True, ok=False, raw='')
+            return url, 'error'
 
-    renderer = threading.Thread(target=render_loop, daemon=True, name='progress-renderer')
-    renderer.start()
+    with ThreadPoolExecutor(max_workers=max_workers) as pool:
+        futures = [pool.submit(_worker, idx, url, fp, fn)
+                   for idx, (url, fp, fn) in enumerate(items)]
+        for f in as_completed(futures):
+            url, status = f.result()
+            results[url] = status
 
-    try:
-        with ThreadPoolExecutor(max_workers=max_workers) as pool:
-            futures = [
-                pool.submit(worker, idx, url, fp, fn)
-                for idx, (url, fp, fn) in enumerate(items)
-            ]
-            for future in as_completed(futures):
-                idx, status = future.result()
-                results[idx] = status
-    finally:
-        stop_render.set()
-        renderer.join(timeout=2)
+    _stop_render.set()
+    renderer.join(timeout=2)
 
-    ok_count = sum(1 for status in results.values() if status == 'ok')
-    err_count = sum(1 for status in results.values() if status == 'error')
-    print(f'\n{CYAN}> Batch complete - {GREEN}{ok_count} ok{RESET}, {RED}{err_count} error(s){RESET}\n')
+    ok  = sum(1 for s in results.values() if s == 'ok')
+    err = sum(1 for s in results.values() if s == 'error')
+    print(f'\n{CYAN}▶ Batch complete — {GREEN}{ok} ok{RESET}, {RED}{err} error(s){RESET}\n')
     return results
+
 
 @register_line_magic
 def tempe(line=''):
