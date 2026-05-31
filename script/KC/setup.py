@@ -388,7 +388,12 @@ def webui_installation(U, W):
     ]
 
     for i in extras: download(i)
-    SyS(f"unzip -qo {W / 'embeddingsXL.zip'} -d {E} && rm {W / 'embeddingsXL.zip'}")
+
+    embeddings_zip = W / 'embeddingsXL.zip'
+    if embeddings_zip.exists():
+        SyS(f"unzip -qo {embeddings_zip} -d {E} && rm {embeddings_zip}")
+    else:
+        print(f'{YELLOW}  embeddingsXL.zip was not downloaded; skipping unzip.{RESET}')
 
     if U != 'SwarmUI': webui_extension(U, W, M)
 

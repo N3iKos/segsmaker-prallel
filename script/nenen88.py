@@ -55,9 +55,12 @@ def _parse_aria2_stats(raw):
     if speed:
         stats['speed_b'] = float(speed.group(1)) * _TO_BYTES.get(speed.group(2), 1)
 
-    eta = re.search(r'ETA:(\d+)(s|m|h)', raw)
+    eta = re.search(r'ETA:(?:(\d+)h)?(?:(\d+)m)?(?:(\d+)s)?', raw)
     if eta:
-        stats['eta_s'] = int(eta.group(1)) * {'s': 1, 'm': 60, 'h': 3600}[eta.group(2)]
+        hours = int(eta.group(1) or 0)
+        minutes = int(eta.group(2) or 0)
+        seconds = int(eta.group(3) or 0)
+        stats['eta_s'] = hours * 3600 + minutes * 60 + seconds
 
     return stats
 
@@ -73,20 +76,21 @@ def _fmt_eta(seconds):
     return f'{seconds}s' if seconds < 60 else f'{seconds // 60}m{seconds % 60:02d}s'
 
 def _fmt_progress(raw):
-    progress = raw
-    progress = re.sub(r'\[', MAGENTA + '【' + RESET, progress)
-    progress = re.sub(r'\]', MAGENTA + '】' + RESET, progress)
-    progress = re.sub(r'(#)(\w+)', f'{CYAN}\\1{RESET}{GREEN}\\2{RESET}', progress)
-    progress = re.sub(
-        r'(\d+(\.\d+)?)(\w+)(/)(\d+(\.\d+)?)(\w+)',
-        f'\\1{PURPLE}\\3{RESET}{MAGENTA}\\4{RESET}\\5{PURPLE}\\7{RESET}',
-        progress,
-    )
-    progress = re.sub(r'(\()(\d+%)(\))', f'{MAGENTA}\\1{RESET}\\2{MAGENTA}\\3{RESET}', progress)
-    progress = re.sub(r'(CN)(:)(\d+)', f'{CYAN}\\1{RESET}\\2{ORANGE}\\3{RESET}', progress)
-    progress = re.sub(r'(DL)(:)([\d.]+)(\w+)', f'{CYAN}\\1{RESET}\\2\\3{PURPLE}\\4{RESET}', progress)
-    progress = re.sub(r'(ETA)(:)(\d+\w+)', f'{CYAN}\\1{RESET}\\2{YELLOW}\\3{RESET}', progress)
-    return progress
+    stats = _parse_aria2_stats(raw)
+    conn = re.search(r'CN:(\d+)', raw)
+    parts = [
+        f"{_fmt_size(stats['done_b'])}/{_fmt_size(stats['total_b'])}",
+        f"{stats['pct']}%",
+    ]
+
+    if conn:
+        parts.append(f"CN:{conn.group(1)}")
+    if stats['speed_b']:
+        parts.append(f"DL:{_fmt_size(stats['speed_b'])}/s")
+    if stats['eta_s']:
+        parts.append(f"ETA:{_fmt_eta(stats['eta_s'])}")
+
+    return ' '.join(parts)
 
 iRON = os.environ
 
@@ -310,7 +314,8 @@ def get_url(url, fn):
     """
     Resolve a user-provided URL into a direct download URL when possible.
     Important fix: do NOT append ?token=... to CivitAI/Backblaze signed URLs (they are sensitive to modification).
-    Only append TOKET for non-Civitai hosts when TOKET is set and needed.
+    Only append TOKET for supported non-Civitai hosts when TOKET is set and needed.
+    Hugging Face uses TOBRUT via Authorization header, never a Civitai query token.
     """
 
     civitai = get_civdom(url)
@@ -323,8 +328,12 @@ def get_url(url, fn):
         except:
             return u
 
-        # If host is Civitai or Backblaze storage, do NOT modify the signed URL.
-        if any(d in host for d in CIVITAI) or host.startswith('b2.'):
+        # If host is Civitai, Hugging Face, or Backblaze storage, do NOT modify the signed URL.
+        if (
+            any(d in host for d in CIVITAI)
+            or host == 'huggingface.co' or host.endswith('.huggingface.co')
+            or host.startswith('b2.')
+        ):
             return u
 
         if not TOKET:
@@ -541,8 +550,8 @@ def curlly(cmd, fn):
 
         with tqdm(
             total=100, desc=f'{fn.ljust(58):>{58 + 2}}', initial=0,
-            bar_format='{desc} 【{bar:20}】【{percentage:3.0f}%】',
-            ascii='▷▶', file=sys.stdout
+            bar_format='{desc} {percentage:3.0f}%',
+            file=sys.stdout
         ) as pbar:
             for line in iter(p.stderr.readline, ''):
                 if line.strip():
