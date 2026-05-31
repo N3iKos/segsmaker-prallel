@@ -308,8 +308,9 @@ def get_url(url, fn):
         except:
             return u
 
-        # If host is Civitai or Backblaze storage, do NOT modify the signed URL.
-        if any(d in host for d in CIVITAI) or host.startswith('b2.'):
+        # Civitai tokens are not Hugging Face query tokens. Public HF files must
+        # stay unchanged; private HF access uses the TOBRUT Authorization header.
+        if any(d in host for d in CIVITAI) or host.startswith('b2.') or 'huggingface.co' in host:
             return u
 
         if not TOKET:
