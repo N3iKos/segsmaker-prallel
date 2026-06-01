@@ -8,7 +8,7 @@
 - SwarmUI
 <br>
 
-| Colab | [![Open in Google Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/gutris1/segsmaker/blob/main/notebook/Segsmaker_COLAB.ipynb) |
+| Colab | [![Open in Google Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/N3iKos/segsmaker-prallel/blob/main/notebook/Segsmaker_COLAB.ipynb) |
 | :---------------------------------------- | :-----------------------------------------------------------------------------------------------------------------: |
 | Kaggle | [![Open in Kaggle](https://kaggle.com/static/images/open-in-kaggle.svg)](https://www.kaggle.com/code/jejejojo/asdasd) |
 | SageMaker Studio Lab | ![Status](https://img.shields.io/badge/☠️-DEAD-darkred) |

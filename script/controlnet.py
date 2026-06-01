@@ -124,7 +124,7 @@ def Download_Model(b):
         CD(HOME)
 
 def load_css():
-    if SM or not Path(CSSCN).exists(): SyS(f'curl -sLo {CSSCN} https://github.com/gutris1/segsmaker/raw/main/script/controlnet.css')
+    if SM or not Path(CSSCN).exists(): SyS(f'curl -sLo {CSSCN} https://github.com/N3iKos/segsmaker-prallel/raw/main/script/controlnet.css')
     display(HTML(f'<style>{Path(CSSCN).read_text()}</style>'))
 
 load_css()
