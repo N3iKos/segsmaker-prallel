@@ -26,8 +26,6 @@ REPO = {
 }
 
 WEBUI_LIST = ['A1111', 'Forge', 'ReForge', 'ReForge-old', 'Forge-Classic', 'Forge-Neo', 'ComfyUI', 'SwarmUI']
-DEFAULT_RAW_BASE = 'https://github.com/gutris1/segsmaker/raw/main'
-RAW_BASE = DEFAULT_RAW_BASE
 
 def getENV():
     env = {
@@ -43,35 +41,33 @@ def getArgs():
     parser.add_argument('--webui', required=True, help='available webui: A1111, Forge, ReForge, ReForge-old, Forge-Classic, Forge-Neo, ComfyUI, SwarmUI')
     parser.add_argument('--civitai_key', required=True, help='your CivitAI API key')
     parser.add_argument('--hf_read_token', default=None, help='your Huggingface READ Token (optional)')
-    parser.add_argument('--repo_raw_base', default=DEFAULT_RAW_BASE, help='raw GitHub base URL for Segsmaker scripts/config')
 
     args, unknown = parser.parse_known_args()
 
     arg1 = args.webui.lower()
     arg2 = args.civitai_key.strip()
     arg3 = args.hf_read_token.strip() if args.hf_read_token else ''
-    arg4 = (args.repo_raw_base or DEFAULT_RAW_BASE).strip().rstrip('/')
 
     if not any(arg1 == option.lower() for option in WEBUI_LIST):
         print(f'{ERROR}: invalid webui option: "{args.webui}"')
         print(f'Available webui options: {", ".join(WEBUI_LIST)}')
-        return None, None, None, DEFAULT_RAW_BASE
+        return None, None, None
 
     if not arg2:
         print(f'{ERROR}: CivitAI API key is missing.')
-        return None, None, None, DEFAULT_RAW_BASE
+        return None, None, None
     if re.search(r'\s+', arg2):
         print(f'{ERROR}: CivitAI API key contains spaces "{arg2}" - not allowed.')
-        return None, None, None, DEFAULT_RAW_BASE
+        return None, None, None
     if len(arg2) < 32:
         print(f'{ERROR}: CivitAI API key must be at least 32 characters long.')
-        return None, None, None, DEFAULT_RAW_BASE
+        return None, None, None
 
     if not arg3: arg3 = ''
     if re.search(r'\s+', arg3): arg3 = ''
 
     selected_ui = next(option for option in WEBUI_LIST if arg1 == option.lower())
-    return selected_ui, arg2, arg3, arg4
+    return selected_ui, arg2, arg3
 
 def getPython():
     global PYV
@@ -323,10 +319,10 @@ def webui_req(U, W, M):
     install_tunnel()
 
     scripts = [
-        f'{RAW_BASE}/script/controlnet.py {W}/asd',
-        f'{RAW_BASE}/script/cn15.py {W}/asd',
-        f'{RAW_BASE}/script/cnxl.py {W}/asd',
-        f'{RAW_BASE}/script/KC/segsmaker.py {W}'
+        f'https://github.com/gutris1/segsmaker/raw/main/script/controlnet.py {W}/asd',
+        f'https://github.com/gutris1/segsmaker/raw/main/script/cn15.py {W}/asd',
+        f'https://github.com/gutris1/segsmaker/raw/main/script/cnxl.py {W}/asd',
+        f'https://github.com/gutris1/segsmaker/raw/main/script/KC/segsmaker.py {W}'
     ]
 
     u = M / 'upscale_models' if U in ['ComfyUI', 'SwarmUI'] else M / 'ESRGAN'
@@ -352,11 +348,11 @@ def webui_req(U, W, M):
 
         for ass in [
             f'https://huggingface.co/gutris1/webui/resolve/main/misc/card-no-preview.png {W}/html card-no-preview.{e}',
-            f'{RAW_BASE}/config/NoCrypt_miku.json {W}/tmp/gradio_themes',
-            f'{RAW_BASE}/config/user.css {W} user.css'
+            f'https://github.com/gutris1/segsmaker/raw/main/config/NoCrypt_miku.json {W}/tmp/gradio_themes',
+            f'https://github.com/gutris1/segsmaker/raw/main/config/user.css {W} user.css'
         ]: download(ass)
 
-        if U not in ['Forge', 'Forge-Neo']: download(f'{RAW_BASE}/config/config.json {W} config.json')
+        if U not in ['Forge', 'Forge-Neo']: download(f'https://github.com/gutris1/segsmaker/raw/main/config/config.json {W} config.json')
 
 def webui_extension(U, W, M):
     EXT = W / 'custom_nodes' if U == 'ComfyUI' else W / 'extensions'
@@ -446,11 +442,11 @@ def webui_installer():
 
 def notebook_scripts():
     z = [
-        (STR / '00-startup.py', f'wget -qO {STR}/00-startup.py {RAW_BASE}/script/KC/00-startup.py'),
-        (nenen, f'wget -qO {nenen} {RAW_BASE}/script/nenen88.py'),
-        (melon, f'wget -qO {melon} {RAW_BASE}/script/melon00.py'),
-        (STR / 'cupang.py', f'wget -qO {STR}/cupang.py {RAW_BASE}/script/cupang.py'),
-        (MRK, f'wget -qO {MRK} {RAW_BASE}/script/marking.py')
+        (STR / '00-startup.py', f'wget -qO {STR}/00-startup.py https://github.com/gutris1/segsmaker/raw/main/script/KC/00-startup.py'),
+        (nenen, f'wget -qO {nenen} https://github.com/gutris1/segsmaker/raw/main/script/nenen88.py'),
+        (melon, f'wget -qO {melon} https://github.com/gutris1/segsmaker/raw/main/script/melon00.py'),
+        (STR / 'cupang.py', f'wget -qO {STR}/cupang.py https://github.com/gutris1/segsmaker/raw/main/script/cupang.py'),
+        (MRK, f'wget -qO {MRK} https://github.com/gutris1/segsmaker/raw/main/script/marking.py')
     ]
 
     [SyS(y) for x, y in z if not Path(x).exists()]
@@ -485,7 +481,7 @@ PURPLE = '\033[38;5;135m'
 ORANGE = '\033[38;5;208m'
 ARROW = f'{ORANGE}▶{RESET}'
 ERROR = f'{PURPLE}[{RESET}{RED}ERROR{RESET}{PURPLE}]{RESET}'
-IMG = f'{RAW_BASE}/script/loading.png'
+IMG = 'https://github.com/gutris1/segsmaker/raw/main/script/loading.png'
 
 HOME = Path(ENVHOME)
 TMP = Path(ENVBASE) / 'temp'
@@ -508,8 +504,7 @@ SRC.mkdir(parents=True, exist_ok=True)
 output = widgets.Output()
 loading = widgets.Output()
 
-webui, civitai_key, hf_read_token, RAW_BASE = getArgs()
-IMG = f'{RAW_BASE}/script/loading.png'
+webui, civitai_key, hf_read_token = getArgs()
 if civitai_key is None: sys.exit()
 
 display(output, loading)
