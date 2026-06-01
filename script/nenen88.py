@@ -565,35 +565,78 @@ def clone(i):
         return line.strip()[len('git clone '):].strip() if line.strip().startswith('git clone') else line.strip()
 
     if p.suffix == '.txt' and p.is_file():
-        cmds = [f'git clone {proc(line)}' for line in p.read_text().splitlines()]
+        cmds = [proc(line) for line in p.read_text().splitlines()]
     elif isinstance(i, str):
-        cmds = [f'git clone {proc(i)}']
+        cmds = [proc(i)]
     else:
-        cmds = [f'git clone {proc(l)}' for l in i]
+        cmds = [proc(l) for l in i]
 
-    for cmd in cmds:
-        cmd = cmd.strip()
-        if not cmd:
+    parallel_batch_clone(cmds)
+
+def parallel_batch_clone(items, max_workers=None):
+    """
+    Clone multiple extension/custom-node repositories in parallel.
+    Items may be raw repo args ("URL optional-folder") or full "git clone ..." lines.
+    """
+    commands = []
+    for item in items:
+        line = str(item).strip()
+        if not line or line.startswith('#'):
             continue
+        if line.startswith('git clone '):
+            line = line[len('git clone '):].strip()
+        commands.append(line)
 
-        cmd_list = shlex.split(cmd)
-        url = next((repo for repo in cmd_list if re.match(r'https?://', repo)), None)
+    if not commands:
+        return {}
 
-        p = subprocess.Popen(cmd_list, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    workers = max_workers or int(os.environ.get('SEGMAKER_CLONE_WORKERS', '4'))
+    workers = max(1, min(int(workers), len(commands)))
+    total = len(commands)
+    results = {}
 
-        while True:
-            output = p.stdout.readline()
-            if not output and p.poll() is not None:
-                break
+    print(f'  Cloning {total} repos with {workers} parallel worker(s)...')
 
-            if output := output.strip():
-                if 'fatal' in output:
-                    print(f'  {output}')
-                elif output.startswith('Cloning into'):
-                    repo_name = "/".join(output.split("'")[1].split("/")[-3:])
-                    print(f'  {repo_name} ▶ {url}')
+    def _label_from_command(command):
+        parts = shlex.split(command)
+        url = next((part for part in parts if re.match(r'https?://', part)), command)
+        folder = None
+        if parts:
+            last = parts[-1]
+            if last != url and not last.startswith('-'):
+                folder = last
+        label = folder or Path(urlparse(url).path).name.rstrip('.git') or url
+        return label, url
 
-        p.wait()
+    def _worker(index, command):
+        label, url = _label_from_command(command)
+        cmd_list = ['git', 'clone', *shlex.split(command)]
+
+        with _print_lock:
+            print(f'  [{index + 1}/{total}] ▶ {label} ▶ {url}')
+
+        proc = subprocess.run(cmd_list, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        output = proc.stdout.strip()
+
+        with _print_lock:
+            if proc.returncode == 0:
+                print(f'  [{index + 1}/{total}] ✓ {label}')
+            else:
+                tail = '\n'.join(output.splitlines()[-6:]) if output else 'git clone failed without output'
+                print(f'  [{index + 1}/{total}] ✗ {label}\n{tail}')
+
+        return command, 'ok' if proc.returncode == 0 else 'error'
+
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        futures = [pool.submit(_worker, idx, cmd) for idx, cmd in enumerate(commands)]
+        for future in as_completed(futures):
+            command, status = future.result()
+            results[command] = status
+
+    ok = sum(1 for status in results.values() if status == 'ok')
+    err = sum(1 for status in results.values() if status == 'error')
+    print(f'\n{CYAN}▶ Clone batch complete — {GREEN}{ok} ok{RESET}, {RED}{err} error(s){RESET}\n')
+    return results
 
 @register_line_magic
 def pull(line):
