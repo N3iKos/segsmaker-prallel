@@ -294,30 +294,16 @@ def get_civitai(j, versionId=None):
 def get_url(url, fn):
     """
     Resolve a user-provided URL into a direct download URL when possible.
-    Important fix: do NOT append ?token=... to CivitAI/Backblaze signed URLs (they are sensitive to modification).
-    Only append TOKET for non-Civitai hosts when TOKET is set and needed.
+    Do not append the Civitai token as a query string to unrelated hosts.
+    Hugging Face auth is handled with TOBRUT as an Authorization header.
     """
 
     civitai = get_civdom(url)
 
     def maybe_add_token(u):
-        # Add token only for non-Civitai hosts and when TOKET is set.
-        try:
-            parsed = urlparse(u)
-            host = parsed.netloc.lower()
-        except:
-            return u
-
-        # If host is Civitai or Backblaze storage, do NOT modify the signed URL.
-        if any(d in host for d in CIVITAI) or host.startswith('b2.'):
-            return u
-
-        if not TOKET:
-            return u
-
-        if '?type=' in u:
-            return u.replace('?type=', f'?token={TOKET}&type=')
-        return f'{u}?token={TOKET}'
+        # TOKET is the Civitai token. Never attach it to Hugging Face,
+        # GitHub, direct links, or signed storage URLs as ?token=...
+        return u
 
     if 'github.com' in url:
         url = url.replace('/blob/', '/raw/')
